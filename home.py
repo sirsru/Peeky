@@ -102,18 +102,18 @@ def draw_banner(scr, y, x, eyes_open):
                         pass
 
 
-def draw_box(scr, bx, by, box_w):
-    for dy in range(3):
+def draw_box(scr, bx, by, box_w, box_h=3):
+    for dy in range(box_h):
         put(scr, by + dy, bx, " " * box_w, attr(P_TEXT))
     b = mut()
     scr.hline(by, bx, curses.ACS_HLINE | b, box_w)
-    scr.hline(by + 2, bx, curses.ACS_HLINE | b, box_w)
-    scr.vline(by, bx, curses.ACS_VLINE | b, 3)
-    scr.vline(by, bx + box_w - 1, curses.ACS_VLINE | b, 3)
+    scr.hline(by + box_h - 1, bx, curses.ACS_HLINE | b, box_w)
+    scr.vline(by, bx, curses.ACS_VLINE | b, box_h)
+    scr.vline(by, bx + box_w - 1, curses.ACS_VLINE | b, box_h)
     scr.addch(by, bx, curses.ACS_ULCORNER | b)
     scr.addch(by, bx + box_w - 1, curses.ACS_URCORNER | b)
-    scr.addch(by + 2, bx, curses.ACS_LLCORNER | b)
-    scr.addch(by + 2, bx + box_w - 1, curses.ACS_LRCORNER | b)
+    scr.addch(by + box_h - 1, bx, curses.ACS_LLCORNER | b)
+    scr.addch(by + box_h - 1, bx + box_w - 1, curses.ACS_LRCORNER | b)
     put(scr, by + 1, bx + 2, "> ", mut())
     put(scr, by + 1, bx + 4, "search or type a url", mut())
 
@@ -144,15 +144,34 @@ def draw_screen(scr, eyes_open):
     return can_box, bx, by, box_w
 
 
-def read_input(scr, y, x, width, first=""):
+def read_input(scr, bx, by, box_w, first=""):
     buf = first
+    max_w = box_w - 6
     while True:
-        put(scr, y, x, buf[:width].ljust(width), attr(P_TEXT))
+        if buf:
+            lines = [buf[i:i + max_w] for i in range(0, len(buf), max_w)]
+        else:
+            lines = [""]
+        content_lines = max(1, len(lines))
+        box_h = min(7, max(3, content_lines + 2))
+
+        # erase old hint drawn by draw_screen at fixed by+4
+        put(scr, by + 4, bx, " " * box_w, attr(P_TEXT))
+
+        draw_box(scr, bx, by, box_w, box_h)
+        for i, line in enumerate(lines):
+            put(scr, by + 1 + i, bx + 4, line.ljust(max_w), attr(P_TEXT))
+        put(scr, by + box_h + 1, bx + (box_w - len(HINT)) // 2, HINT, mut())
+
+        last_line = lines[-1]
+        cursor_y = by + 1 + (len(lines) - 1)
+        cursor_x = bx + 4 + min(len(last_line), max_w)
         try:
-            scr.move(y, x + min(len(buf), width))
+            scr.move(cursor_y, cursor_x)
         except curses.error:
             pass
         scr.refresh()
+
         k = scr.getch()
         if k in (10, 13, curses.KEY_ENTER):
             return buf.strip()
@@ -160,7 +179,7 @@ def read_input(scr, y, x, width, first=""):
             return ""
         if k in (curses.KEY_BACKSPACE, 127, 8):
             buf = buf[:-1]
-        elif 32 <= k < 127 and len(buf) < width:
+        elif 32 <= k < 127 and len(buf) < max_w * 5:
             buf += chr(k)
 
 
@@ -207,11 +226,11 @@ def draw_home(stdscr):
         elif key == curses.KEY_F0 + 2:
             pass  # settings
         elif can_box and key in (curses.KEY_ENTER, 10, 13):
-            q = read_input(stdscr, by + 1, bx + 4, box_w - 6)
+            q = read_input(stdscr, bx, by, box_w)
             if q:
                 open_query(q)
         elif can_box and 32 <= key < 127:
-            q = read_input(stdscr, by + 1, bx + 4, box_w - 6, first=chr(key))
+            q = read_input(stdscr, bx, by, box_w, first=chr(key))
             if q:
                 open_query(q)
 

@@ -5,6 +5,7 @@ import sys
 import termios
 import time
 import webbrowser
+import settings
 from urllib.parse import quote
 
 WORD = "peeky"
@@ -52,6 +53,8 @@ BLINK_GAP = (2.6, 5.2)
 DOUBLE_BLINK_P = 0.18
 
 P_TEXT, P_ACCENT, P_PANEL, P_MUTED = 1, 2, 3, 4
+
+SELECTABLES = ["search", "github", "settings"]
 
 URL_RE = re.compile(r"^[\w-]+(\.[\w-]+)+(:\d+)?([/?#]\S*)?$")
 
@@ -102,10 +105,11 @@ def draw_banner(scr, y, x, eyes_open):
                         pass
 
 
-def draw_box(scr, bx, by, box_w, box_h=3):
+def draw_box(scr, bx, by, box_w, box_h=3, highlight=False):
+    fill = attr(P_ACCENT, curses.A_BOLD) if highlight else attr(P_TEXT)
+    b = attr(P_ACCENT, curses.A_BOLD) if highlight else mut()
     for dy in range(box_h):
-        put(scr, by + dy, bx, " " * box_w, attr(P_TEXT))
-    b = mut()
+        put(scr, by + dy, bx, " " * box_w, fill)
     scr.hline(by, bx, curses.ACS_HLINE | b, box_w)
     scr.hline(by + box_h - 1, bx, curses.ACS_HLINE | b, box_w)
     scr.vline(by, bx, curses.ACS_VLINE | b, box_h)
@@ -114,11 +118,12 @@ def draw_box(scr, bx, by, box_w, box_h=3):
     scr.addch(by, bx + box_w - 1, curses.ACS_URCORNER | b)
     scr.addch(by + box_h - 1, bx, curses.ACS_LLCORNER | b)
     scr.addch(by + box_h - 1, bx + box_w - 1, curses.ACS_LRCORNER | b)
-    put(scr, by + 1, bx + 2, "> ", mut())
-    put(scr, by + 1, bx + 4, "search or type a url", mut())
+    hint_attr = attr(P_ACCENT, curses.A_BOLD) if highlight else mut()
+    put(scr, by + 1, bx + 2, "> ", hint_attr)
+    put(scr, by + 1, bx + 4, "search or type a url", hint_attr)
 
 
-def draw_screen(scr, eyes_open):
+def draw_screen(scr, eyes_open, sel=0):
     h, w = scr.getmaxyx()
     use_banner = w >= BANNER_W + 2 and h >= BANNER_H + 7
     if use_banner:
@@ -133,18 +138,21 @@ def draw_screen(scr, eyes_open):
     box_w = max(min(w - 4, 58), 10)
     bx = max((w - box_w) // 2, 0)
     can_box = by + 2 <= h - 2 and box_w >= 8
+    highlight_box = can_box and sel == 0
     if can_box:
-        draw_box(scr, bx, by, box_w)
-        put(scr, by + 4, bx + (box_w - len(HINT)) // 2, HINT, mut())
+        draw_box(scr, bx, by, box_w, highlight=highlight_box)
+        put(scr, by + 4, bx + (box_w - len(HINT)) // 2, HINT, mut() if not highlight_box else attr(P_ACCENT, curses.A_BOLD))
 
     if h >= 2 and w >= 24:
-        put(scr, h - 1, 2, "f1 github", attr(P_MUTED))
-        put(scr, h - 1, max(w - 13, 14), "f2 settings", attr(P_MUTED))
+        github_attr = attr(P_ACCENT, curses.A_BOLD) if sel == 1 else mut()
+        settings_attr = attr(P_ACCENT, curses.A_BOLD) if sel == 2 else mut()
+        put(scr, h - 1, 2, "github", github_attr)
+        put(scr, h - 1, max(w - 10, 12), "settings", settings_attr)
     scr.refresh()
     return can_box, bx, by, box_w
 
 
-def read_input(scr, bx, by, box_w, first=""):
+def read_input(scr, bx, by, box_w, first="", highlight=False):
     buf = first
     max_w = box_w - 6
     while True:
@@ -158,10 +166,10 @@ def read_input(scr, bx, by, box_w, first=""):
         # erase old hint drawn by draw_screen at fixed by+4
         put(scr, by + 4, bx, " " * box_w, attr(P_TEXT))
 
-        draw_box(scr, bx, by, box_w, box_h)
+        draw_box(scr, bx, by, box_w, box_h, highlight=highlight)
         for i, line in enumerate(lines):
-            put(scr, by + 1 + i, bx + 4, line.ljust(max_w), attr(P_TEXT))
-        put(scr, by + box_h + 1, bx + (box_w - len(HINT)) // 2, HINT, mut())
+            put(scr, by + 1 + i, bx + 4, line.ljust(max_w), attr(P_ACCENT, curses.A_BOLD) if highlight else attr(P_TEXT))
+        put(scr, by + box_h + 1, bx + (box_w - len(HINT)) // 2, HINT, attr(P_ACCENT, curses.A_BOLD) if highlight else mut())
 
         last_line = lines[-1]
         cursor_y = by + 1 + (len(lines) - 1)
@@ -205,6 +213,7 @@ def draw_home(stdscr):
     eyes_open = True
     next_blink = time.monotonic() + random.uniform(*BLINK_GAP)
     shut_until = 0.0
+    sel = 0  # 0=search, 1=github, 2=settings
 
     while True:
         now = time.monotonic()
@@ -216,21 +225,27 @@ def draw_home(stdscr):
             next_blink = now + gap
 
         stdscr.erase()
-        can_box, bx, by, box_w = draw_screen(stdscr, eyes_open)
+        can_box, bx, by, box_w = draw_screen(stdscr, eyes_open, sel)
 
         key = stdscr.getch()
         if key in (3, 17):  # ctrl+c, ctrl+q
             break
-        elif key == curses.KEY_F0 + 1:
-            webbrowser.open("https://github.com")
-        elif key == curses.KEY_F0 + 2:
-            pass  # settings
-        elif can_box and key in (curses.KEY_ENTER, 10, 13):
-            q = read_input(stdscr, bx, by, box_w)
-            if q:
-                open_query(q)
-        elif can_box and 32 <= key < 127:
-            q = read_input(stdscr, bx, by, box_w, first=chr(key))
+        elif key == 9 or key == 353:  # tab or shift+tab
+            if key == 353:
+                sel = (sel - 1) % len(SELECTABLES)
+            else:
+                sel = (sel + 1) % len(SELECTABLES)
+        elif key == curses.KEY_ENTER or key in (10, 13):
+            if sel == 1:
+                webbrowser.open("https://github.com")
+            elif sel == 2:
+                settings.draw_settings(stdscr)
+            elif sel == 0 and can_box:
+                q = read_input(stdscr, bx, by, box_w, highlight=True)
+                if q:
+                    open_query(q)
+        elif sel == 0 and can_box and 32 <= key < 127:
+            q = read_input(stdscr, bx, by, box_w, highlight=True, first=chr(key))
             if q:
                 open_query(q)
 

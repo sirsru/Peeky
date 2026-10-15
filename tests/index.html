@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Peeky Test Page</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <center>
+        <h1>Welcome to My Test Page!</h1>
+        <hr width="80%" color="blue">
+    </center>
+
+    <p><font color="red" size="+2">B</font>ig red letter!</p>
+
+    <h2>Text Stuff</h2>
+    <p>This is a <b>bold</b> paragraph with <i>italic</i> and <u>underline</u> text.</p>
+    <p>Also <font color="green">green text</font> and <font color="blue">blue text</font> and <font face="Courier New">monospace</font>.</p>
+
+    <h2>Links</h2>
+    <p><a href="#images">Go to Images</a> | <a href="#colors">Go to Colors</a> | <a href="#forms">Go to Forms</a></p>
+
+    <h2 id="images">Images</h2>
+    <p>Here is an image:</p>
+    <center>
+        <img src="22aa3e6fd4413353b903d34b5249f66d.jpg" alt="Test Image" width="400" height="300" border="2">
+        <br>
+        <small>Test image from tests folder</small>
+    </center>
+
+    <h2 id="colors">Colors & Tables</h2>
+    <table border="1" cellpadding="5" cellspacing="0" width="100%" bgcolor="#f0f0f0">
+        <tr bgcolor="#cccccc">
+            <td><b>Color Name</b></td>
+            <td><b>Sample</b></td>
+        </tr>
+        <tr>
+            <td>Red</td>
+            <td bgcolor="red"><font color="white">RED</font></td>
+        </tr>
+        <tr>
+            <td>Green</td>
+            <td bgcolor="lime"><font color="black">GREEN</font></td>
+        </tr>
+        <tr>
+            <td>Blue</td>
+            <td bgcolor="blue"><font color="white">BLUE</font></td>
+        </tr>
+        <tr>
+            <td>Yellow</td>
+            <td bgcolor="yellow"><font color="black">YELLOW</font></td>
+        </tr>
+        <tr>
+            <td>Purple</td>
+            <td bgcolor="purple"><font color="white">PURPLE</font></td>
+        </tr>
+    </table>
+
+    <h2>Lists</h2>
+    <p>Unordered list:</p>
+    <ul>
+        <li>First item</li>
+        <li>Second item</li>
+        <li>Third item</li>
+    </ul>
+
+    <p>Ordered list:</p>
+    <ol>
+        <li>Step one</li>
+        <li>Step two</li>
+        <li>Step three</li>
+    </ol>
+
+    <h2 id="forms">Form Test</h2>
+    <form>
+        <p>Name: <input type="text" name="name" size="30"></p>
+        <p>Email: <input type="text" name="email" size="30"></p>
+        <p>Password: <input type="password" name="pass" size="30"></p>
+        <p>
+            Gender:
+            <input type="radio" name="gender" value="male"> Male
+            <input type="radio" name="gender" value="female"> Female
+        </p>
+        <p>
+            Hobbies:
+            <input type="checkbox" name="hobby" value="reading"> Reading
+            <input type="checkbox" name="hobby" value="coding"> Coding
+            <input type="checkbox" name="hobby" value="gaming"> Gaming
+        </p>
+        <p>
+            Country:
+            <select name="country">
+                <option value="">Select...</option>
+                <option value="us">United States</option>
+                <option value="uk">United Kingdom</option>
+                <option value="ca">Canada</option>
+            </select>
+        </p>
+        <p>Comments:<br>
+        <textarea name="comments" rows="4" cols="50"></textarea></p>
+        <p><input type="submit" value="Submit"> <input type="reset" value="Reset"></p>
+    </form>
+
+    <hr width="80%" color="blue">
+    <center>
+        <p><small>Peeky Browser Engine Test Page &copy; 2015</small></p>
+    </center>
+</body>
+</html>

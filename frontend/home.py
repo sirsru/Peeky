@@ -1,6 +1,7 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "peeky-engine"))
 
 VERBOSE = "--verbose" in sys.argv
 
@@ -379,11 +380,14 @@ def draw_page(scr, tab, w, h):
     max_s = max(0, total - rows)
     tab.scroll = max(0, min(tab.scroll, max_s))
     if tab.grid:
-        draw_grid(scr, tab.palette, tab.grid, top, tab.scroll, rows)
-        if max_s:
-            draw_scrollbar(scr, top, rows, total, tab.scroll, w - 1)
+        # leave the last column for the scrollbar when one is shown
+        limit = w - 1 if max_s else w
+        draw_scrollbar(scr, top, rows, total, tab.scroll, w - 1)
+        scr.refresh()                              # chrome + scrollbar to screen
+        draw_grid(scr, tab.palette, tab.grid, top, tab.scroll, rows, limit=limit)  # raw ANSI truecolor grid
     else:
         put(scr, top + 1, 2, "render failed - see log.txt", mut())
+        scr.refresh()
 
 
 def prompt_line(scr, label="go: "):
@@ -423,12 +427,22 @@ def draw_home(stdscr):
     next_blink = time.monotonic() + random.uniform(*BLINK_GAP)
     shut_until = 0.0
     sel = 0
+    prev_mode = None
 
     while True:
         try:
             tab = tabs[active]
             h, w = stdscr.getmaxyx()
             can_box, bx, by, box_w = False, 0, 0, 0
+
+            if tab.mode == "home" and prev_mode == "page":
+                # previous page was painted straight to the terminal by
+                # draw_grid (bypasses curses); clear the physical screen so
+                # stale page content cannot show through the home screen
+                stdscr.clear()
+            else:
+                stdscr.erase()
+            prev_mode = tab.mode
 
             if tab.mode == "home":
                 stdscr.timeout(80)
@@ -448,7 +462,8 @@ def draw_home(stdscr):
                 can_box, bx, by, box_w = draw_screen(stdscr, eyes_open, sel)
             else:
                 draw_page(stdscr, tab, w, h)
-            stdscr.refresh()
+            if tab.mode != "page":
+                stdscr.refresh()
 
             key = stdscr.getch()
             if key == -1 or key == curses.KEY_RESIZE:

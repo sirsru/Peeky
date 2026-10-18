@@ -6,6 +6,25 @@ __pycache__/
 # C extensions
 *.so
 
+# C / C++ build artifacts
+*.o
+*.obj
+*.exe
+*.out
+*.app
+*.dSYM
+*.gch
+*.pch
+build/
+
+# These compiled binaries getting on my nerves
+peeky-engine/cssom
+peeky-engine/layout
+peeky-engine/paint
+peeky-engine/render-tree
+peeky-engine/tokenize
+peeky-engine/tree
+
 # Distribution / packaging
 .Python
 build/

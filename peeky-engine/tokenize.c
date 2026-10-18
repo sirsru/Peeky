@@ -8,7 +8,7 @@
 
 #define IS_WS(c) ((c) == ' ' || (c) == '\t' || (c) == '\n' || (c) == '\r' || (c) == '\f')
 
-// UTF-8 encode. returns bytes written
+//utf8 ;-;
 static size_t utf8(uint32_t cp, char *buf) {
     if (cp <= 0x7F)      { buf[0] = (char)cp; return 1; }
     if (cp <= 0x7FF)     { buf[0] = 0xC0 | (cp >> 6);  buf[1] = 0x80 | (cp & 0x3F); return 2; }
@@ -18,7 +18,6 @@ static size_t utf8(uint32_t cp, char *buf) {
     return 4;
 }
 
-// Decode html character references
 static char *decode_entities(const char *s, size_t n, size_t *outlen) {
     char *out = malloc(n * 3 + 1);
     if (!out) return NULL;
@@ -225,7 +224,6 @@ static const char *parse_attrs(const char *p, int emit, int *self_close) {
     }
 }
 
-// Find "</name" with whitespace / or >
 static const char *find_close(const char *p, size_t len, const char *name) {
     size_t nl = strlen(name);
     const char *end = p + len;

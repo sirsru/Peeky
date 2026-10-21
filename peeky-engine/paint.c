@@ -741,6 +741,38 @@ static Color avg(Color *p, int n) {
     return RGB(r / n, g / n, b / n);
 }
 
+static Color xterm_rgb(int i);
+static int xterm_index(Color c);
+static int g_dither = 1;
+
+static float clampf255(float v) { return v < 0 ? 0 : v > 255 ? 255 : v; }
+
+static const int BAYER4[4][4] = {
+    { 0,  8,  2, 10}, {12,  4, 14,  6},
+    { 3, 11,  1,  9}, {15,  7, 13,  5}
+};
+
+static float mix_ratio(Color c, Color a, Color b) {
+    float dx = (float)COLOR_R(b) - COLOR_R(a);
+    float dy = (float)COLOR_G(b) - COLOR_G(a);
+    float dz = (float)COLOR_B(b) - COLOR_B(a);
+    float len2 = dx*dx + dy*dy + dz*dz;
+    if (len2 < 1) return 0;
+    float t = (((float)COLOR_R(c) - COLOR_R(a)) * dx +
+               ((float)COLOR_G(c) - COLOR_G(a)) * dy +
+               ((float)COLOR_B(c) - COLOR_B(a)) * dz) / len2;
+    return t < 0 ? 0 : t > 1 ? 1 : t;
+}
+
+// nearest palette color p1, plus the palette color on the opposite side of c
+static void mix_plan(Color c, Color *p1, Color *p2) {
+    *p1 = xterm_rgb(xterm_index(c));
+    int r = (int)clampf255(2.0f * COLOR_R(c) - COLOR_R(*p1));
+    int g = (int)clampf255(2.0f * COLOR_G(c) - COLOR_G(*p1));
+    int b = (int)clampf255(2.0f * COLOR_B(c) - COLOR_B(*p1));
+    *p2 = xterm_rgb(xterm_index(RGB(r, g, b)));
+}
+
 static void render_image(Box *b) {
     if (!b->image_src) return;
     init_lut();
@@ -798,14 +830,36 @@ static void render_image(Box *b) {
                 else                dark[dn++] = q[i];
             }
             Cell *cell = &grid[(size_t)cy * g_cols + cx];
-            cell->fg = bn ? avg(bright, bn)   : avg(q, 4);
-            cell->bg = dn ? avg(dark,   dn)   : avg(q, 4);
-            unsigned idx = 0;
-            if (lums[0] > mean) idx |= 8;
-            if (lums[1] > mean) idx |= 4;
-            if (lums[2] > mean) idx |= 2;
-            if (lums[3] > mean) idx |= 1;
-            cell->glyph = BLOCKS[idx];
+            int lo = 255, hi = 0;
+            for (int i = 0; i < 4; i++) {
+                if (lums[i] < lo) lo = lums[i];
+                if (lums[i] > hi) hi = lums[i];
+            }
+
+            if (g_dither && hi - lo <= 40) {
+                Color m = avg(q, 4), p1, p2;
+                mix_plan(m, &p1, &p2);
+                float r = mix_ratio(m, p1, p2);
+                unsigned idx = 0;
+                static const unsigned bit[4] = {8, 4, 2, 1};
+                for (int k = 0; k < 4; k++) {
+                    int sx = cx * 2 + (k & 1), sy = cy * 2 + (k >> 1);
+                    float thr = (BAYER4[sy & 3][sx & 3] + 0.5f) / 16.0f;
+                    if (r > thr) idx |= bit[k];
+                }
+                cell->fg = p2;
+                cell->bg = p1;
+                cell->glyph = BLOCKS[idx];
+            } else {
+                cell->fg = bn ? avg(bright, bn) : avg(q, 4);
+                cell->bg = dn ? avg(dark,   dn) : avg(q, 4);
+                unsigned idx = 0;
+                if (lums[0] > mean) idx |= 8;
+                if (lums[1] > mean) idx |= 4;
+                if (lums[2] > mean) idx |= 2;
+                if (lums[3] > mean) idx |= 1;
+                cell->glyph = BLOCKS[idx];
+            }
         }
     }
     free(resized);
@@ -968,7 +1022,7 @@ int main(int argc, char **argv) {
     int ansi = 0;
     const char *arg = NULL;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--ansi")) ansi = 1;
+        if (!strcmp(argv[i], "--ansi")) { ansi = 1; g_dither = 0; }
         else if (!strcmp(argv[i], "--base-dir") && i + 1 < argc) {
             g_base_dir = argv[++i];
         } else {

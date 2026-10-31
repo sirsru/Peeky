@@ -347,6 +347,31 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
         return box;
     }
 
+    //Tables work now !11!
+    if (n->tag && !strcmp(n->tag, "tr")) {
+        int cell_n = 0;
+        for (int i = 0; i < n->kid_n; i++) {
+            RenderNode *k = n->kids[i];
+            if (!k->tag) continue;
+            if (!strcmp(k->tag, "td") || !strcmp(k->tag, "th")) cell_n++;
+        }
+        float cell_w = (cell_n > 0) ? child_w / (float)cell_n : child_w;
+        float cur_x = child_x;
+        float max_h = 0;
+        for (int i = 0; i < n->kid_n; i++) {
+            RenderNode *k = n->kids[i];
+            if (!k->tag) continue;
+            if (!strcmp(k->tag, "td") || !strcmp(k->tag, "th")) {
+                LayoutBox *c = build_box(k, cur_x, child_y, cell_w);
+                push_child(box, c);
+                if (c->bounds.height > max_h) max_h = c->bounds.height;
+                cur_x += cell_w;
+            }
+        }
+        box->bounds.height = max_h + p_t + p_b + b_t + b_b;
+        return box;
+    }
+
     int all_inline = n->kid_n > 0;
     for (int i = 0; i < n->kid_n && all_inline; i++) {
         if (node_display(n->kids[i]) != DISPLAY_INLINE) all_inline = 0;

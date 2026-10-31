@@ -886,6 +886,20 @@ static void overlay_replaced(Box *b) {
                 place_alt_text(cc0, rr0, cc1, rr1, b->label, fg, bg);
             }
         }
+    } else if (!strcmp(b->label, "input") || !strcmp(b->label, "textarea") ||
+               !strcmp(b->label, "select")) {
+        int cc0, rr0, cc1, rr1;
+        cell_rect(b, &cc0, &rr0, &cc1, &rr1);
+        cc1--; rr1--;
+        if (cc0 < 0) cc0 = 0;
+        if (rr0 < 0) rr0 = 0;
+        if (cc1 >= g_cols) cc1 = g_cols - 1;
+        if (rr1 >= g_rows) rr1 = g_rows - 1;
+        if (cc0 <= cc1 && rr0 <= rr1) {
+            Color fg = b->has_border ? b->border_color : RGB(0x99, 0x99, 0x99);
+            Color bg = b->has_bg ? b->bg : BG_DEFAULT;
+            draw_rect_border(cc0, rr0, cc1, rr1, fg, bg);
+        }
     }
     for (int i = 0; i < b->kid_n; i++)
         overlay_replaced(b->kids[i]);

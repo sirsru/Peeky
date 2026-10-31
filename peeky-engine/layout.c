@@ -16,6 +16,26 @@
 static float g_kx = 1.0f, g_ky = 1.0f;
 static float g_css_per_cell;
 
+static RenderNode **g_tmp_nodes = NULL;
+static size_t g_tmp_n = 0, g_tmp_cap = 0;
+
+static void tmp_node_track(RenderNode *n) {
+    if (g_tmp_n >= g_tmp_cap) {
+        g_tmp_cap = g_tmp_cap ? g_tmp_cap * 2 : 16;
+        g_tmp_nodes = realloc(g_tmp_nodes, g_tmp_cap * sizeof(RenderNode *));
+    }
+    g_tmp_nodes[g_tmp_n++] = n;
+}
+
+static void tmp_nodes_free(void) {
+    for (size_t i = 0; i < g_tmp_n; i++)
+        free_render_node(g_tmp_nodes[i]);
+    free(g_tmp_nodes);
+    g_tmp_nodes = NULL;
+    g_tmp_n = 0;
+    g_tmp_cap = 0;
+}
+
 static const char *node_prop(RenderNode *n, const char *prop);
 static LayoutBox *build_box(RenderNode *, float, float, float);
 static void shift_box(LayoutBox *, float, float);
@@ -221,6 +241,50 @@ static void align_line(LayoutBox *box, size_t from, float used, float w, int ali
         shift_box(box->children[i], dx, 0);
 }
 
+//inline text stuff
+static float layout_text_words(LayoutBox *box, RenderNode *k, float x0, float y, float w,
+                               float *line_x, float *line_h, size_t *line_start, int align) {
+    const char *t = k->text;
+    size_t n = strlen(t), i = 0;
+    float cm_l = parse_prop_f(k, "margin-left");
+    float cm_r = parse_prop_f(k, "margin-right");
+    while (i < n) {
+        while (i < n && t[i] == ' ') {
+            *line_x += g_css_per_cell;
+            i++;
+        }
+        size_t start = i;
+        while (i < n && t[i] != ' ') i++;
+        size_t wlen = i - start;
+        if (wlen == 0) continue;
+        float wd = g_css_per_cell * (float)wlen;
+        float bx = *line_x;
+        if (bx > x0 && bx + cm_l + wd + cm_r > x0 + w) {
+            align_line(box, *line_start, bx - x0, w, align);
+            y += *line_h;
+            *line_x = x0; *line_h = 0; *line_start = box->child_count;
+            bx = x0;
+        }
+        char *word = malloc(wlen + 1);
+        memcpy(word, t + start, wlen);
+        word[wlen] = '\0';
+        RenderNode *wn = node_new(NULL, word);
+        free(word);
+        tmp_node_track(wn);
+        LayoutBox *cb = calloc(1, sizeof *cb);
+        cb->node = wn;
+        cb->display = DISPLAY_INLINE;
+        cb->bounds.x = bx;
+        cb->bounds.y = y;
+        cb->bounds.width = wd;
+        cb->bounds.height = TEXT_LINE_H;
+        push_child(box, cb);
+        if (TEXT_LINE_H > *line_h) *line_h = TEXT_LINE_H;
+        *line_x = bx + cm_l + wd + cm_r;
+    }
+    return y;
+}
+
 static float layout_inline_run(LayoutBox *box, RenderNode *n, int i0, int i1,
                                float x0, float y, float w, int align) {
     size_t line_start = box->child_count;
@@ -239,6 +303,10 @@ static float layout_inline_run(LayoutBox *box, RenderNode *n, int i0, int i1,
             y += line_h > 0 ? line_h : TEXT_LINE_H;
             line_x = x0; line_h = 0;
             line_start = box->child_count;
+            continue;
+        }
+        if (!k->tag && k->text) {
+            y = layout_text_words(box, k, x0, y, w, &line_x, &line_h, &line_start, align);
             continue;
         }
         float cm_l = parse_prop_f(k, "margin-left");
@@ -349,25 +417,37 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
 
     //Tables work now !11!
     if (n->tag && !strcmp(n->tag, "tr")) {
+        int *cell_idx = malloc(sizeof(int) * (size_t)n->kid_n);
         int cell_n = 0;
         for (int i = 0; i < n->kid_n; i++) {
             RenderNode *k = n->kids[i];
             if (!k->tag) continue;
-            if (!strcmp(k->tag, "td") || !strcmp(k->tag, "th")) cell_n++;
+            if (!strcmp(k->tag, "td") || !strcmp(k->tag, "th"))
+                cell_idx[cell_n++] = i;
         }
-        float cell_w = (cell_n > 0) ? child_w / (float)cell_n : child_w;
+        float *cw = malloc(sizeof(float) * (size_t)cell_n);
+        float fixed_total = 0.0f;
+        int auto_n = 0;
+        for (int ci = 0; ci < cell_n; ci++) {
+            float wp = parse_len(n->kids[cell_idx[ci]], "width", child_w);
+            if (wp > 0) { cw[ci] = wp; fixed_total += wp; }
+            else { cw[ci] = -1.0f; auto_n++; }
+        }
+        float auto_w = auto_n > 0 ? (child_w - fixed_total) / (float)auto_n : 0.0f;
+        if (auto_w < 0.0f) auto_w = 0.0f;
+        for (int ci = 0; ci < cell_n; ci++)
+            if (cw[ci] < 0.0f) cw[ci] = auto_w;
         float cur_x = child_x;
         float max_h = 0;
-        for (int i = 0; i < n->kid_n; i++) {
-            RenderNode *k = n->kids[i];
-            if (!k->tag) continue;
-            if (!strcmp(k->tag, "td") || !strcmp(k->tag, "th")) {
-                LayoutBox *c = build_box(k, cur_x, child_y, cell_w);
-                push_child(box, c);
-                if (c->bounds.height > max_h) max_h = c->bounds.height;
-                cur_x += cell_w;
-            }
+        for (int ci = 0; ci < cell_n; ci++) {
+            RenderNode *k = n->kids[cell_idx[ci]];
+            LayoutBox *c = build_box(k, cur_x, child_y, cw[ci]);
+            push_child(box, c);
+            if (c->bounds.height > max_h) max_h = c->bounds.height;
+            cur_x += cw[ci];
         }
+        free(cw);
+        free(cell_idx);
         box->bounds.height = max_h + p_t + p_b + b_t + b_b;
         return box;
     }
@@ -385,19 +465,16 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
     }
 
     if (box->display == DISPLAY_INLINE) {
-        float cur_x = child_x;
-        float line_h = 0;
-        for (int i = 0; i < n->kid_n; i++) {
-            float cm_l = parse_prop_f(n->kids[i], "margin-left");
-            float cm_r = parse_prop_f(n->kids[i], "margin-right");
-            LayoutBox *child = build_box(n->kids[i], cur_x, child_y, child_w);
-            child->bounds.y = child_y;
-            push_child(box, child);
-            if (child->bounds.height > line_h) line_h = child->bounds.height;
-            cur_x += cm_l + child->bounds.width + cm_r;
+        int align = node_align(n);
+        float end_y = layout_inline_run(box, n, 0, n->kid_n, child_x, child_y, child_w, align);
+        box->bounds.height = (end_y - child_y) + p_t + p_b + b_t + b_b;
+        float mx = child_x;
+        for (size_t i = 0; i < box->child_count; i++) {
+            float ex = box->children[i]->bounds.x + box->children[i]->bounds.width;
+            if (ex > mx) mx = ex;
         }
-        box->bounds.width = cur_x - child_x;
-        box->bounds.height = line_h + p_t + p_b + b_t + b_b;
+        box->bounds.width = mx - child_x;
+        if (box->bounds.width < 0.0f) box->bounds.width = 0.0f;
     } else {
         int align = node_align(n);
         float y = child_y;
@@ -564,6 +641,7 @@ int main(int argc, char **argv) {
 
     puts("#layout");
     print_layout(layout, 0, NULL);
+    tmp_nodes_free();
 
     RenderNode *root = layout->node;
     free_layout_box(layout);

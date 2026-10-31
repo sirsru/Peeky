@@ -18,6 +18,8 @@ CT_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg", "image/gi
           "image/bmp": "bmp", "image/webp": "webp"}
 
 
+#Wowie do I love tab completion!11
+
 #low level stuff
 
 def _read_local(url):
@@ -40,6 +42,7 @@ def _request(url, accept, ua=FIREFOX_UA, referer=None, timeout=30, limit=None):
         if limit and size[0] > limit:
             return 0 #If too big, screw you
         out.append(chunk)
+        return len(chunk)
 
     def header(line):
         line = line.decode("iso-8859-1")
@@ -67,6 +70,9 @@ def _request(url, accept, ua=FIREFOX_UA, referer=None, timeout=30, limit=None):
         c.setopt(pycurl.CONNECTTIMEOUT, 10)
         c.setopt(pycurl.WRITEFUNCTION, write)
         c.setopt(pycurl.HEADERFUNCTION, header)
+        c.setopt(pycurl.HTTP_VERSION, pycurl.CURL_HTTP_VERSION_2TLS)
+        c.setopt(pycurl.TCP_KEEPALIVE, 1)
+        c.setopt(pycurl.FORBID_REUSE, 0)
         c.perform()
         status = c.getinfo(pycurl.RESPONSE_CODE)
         final = c.getinfo(pycurl.EFFECTIVE_URL)
@@ -201,6 +207,33 @@ class _Page:
 
     # ---- CSS
 
+    def _fetch_css(self, url, depth=0):
+        #Fetch stylesheet and inline @imports
+        if depth > MAX_CSS_DEPTH or url in self.css_seen:
+            return ""
+        self.css_seen.add(url)
+        try:
+            data, final, _ct, status = _request(
+                url, "text/css,*/*;q=0.1", FIREFOX_UA, self.referer,
+                timeout=15, limit=MAX_RESOURCE)
+        except pycurl.error:
+            return ""
+        if status >= 400 or not data:
+            return ""
+        text = data.decode("utf-8", "replace").lstrip("\ufeff")
+
+        def do_import(m):
+            ref = m.group(1) or m.group(2) or m.group(3)
+            media = (m.group(4) or "").strip().lower()
+            if media and "print" in media and "screen" not in media and "all" not in media:
+                return ""
+            if ref.startswith("data:"):
+                got = _decode_data_uri(ref)
+                return got[0].decode("utf-8", "replace") if got else ""
+            return self._fetch_css(urljoin(final, htmllib.unescape(ref)), depth + 1)
+
+        return IMPORT_RE.sub(do_import, text)
+
     def css(self, url, depth=0):
         """Fetch a stylesheet, inline @imports, rewrite url() to cached files."""
         if depth > MAX_CSS_DEPTH or url in self.css_seen:
@@ -292,6 +325,23 @@ def _decode_html(body, ctype):
 
 # ---------------------------------------------------------------- public
 
+def _rewrite_css_urls(text, page, base):
+    #cache that shi
+    def do_url(m):
+        ref = m.group(2).strip()
+        if ref.startswith("#"):
+            return m.group(0)
+        ext = os.path.splitext(ref.split("?")[0].split("#")[0])[1].lower()
+        if ext in (".woff", ".woff2", ".ttf", ".otf", ".eot", ".svg", ".cur", ".ico"):
+            return m.group(0)
+        if ref.startswith("data:font") or ref.startswith("data:application/font") \
+                or ref.startswith("data:image/svg"):
+            return m.group(0)
+        local = page.image(ref, base)
+        return 'url("%s")' % local if local else m.group(0)
+    return CSS_URL_RE.sub(do_url, text)
+
+
 def fetch_page(url):
     if url.startswith("file://"):
         return _read_local(url)
@@ -310,7 +360,86 @@ def fetch_page(url):
 
     page = _Page(base, final)
 
-    # <link rel=stylesheet> -> <style>
+    #discover resource stuff ----------------------------------------------------------
+    css_links = [] # absolute url of external stylesheets
+    inline_styles = [] # css_text, css_base
+    img_entries = [] # tag, ref, base
+
+    def do_link_collect(m):
+        a = _attrs(m.group(0))
+        if "stylesheet" not in a.get("rel", "").lower() or not a.get("href"):
+            return m.group(0)
+        media = a.get("media", "").lower()
+        if media and "print" in media and "screen" not in media and "all" not in media:
+            return m.group(0)
+        href = htmllib.unescape(a["href"])
+        if href.startswith("data:"):
+            got = _decode_data_uri(href)
+            if got:
+                inline_styles.append((got[0].decode("utf-8", "replace"), base))
+            return m.group(0)
+        css_links.append(urljoin(base, href))
+        return m.group(0)
+
+    text = LINK_RE.sub(do_link_collect, text)
+
+    def do_style_collect(m):
+        inline_styles.append((m.group(2), base))
+        return m.group(0)
+    text = STYLE_RE.sub(do_style_collect, text)
+
+    def do_img_collect(m):
+        tag = m.group(0)
+        a = _attrs(tag)
+        cands = []
+        for k in ("src", "data-src", "data-original", "data-lazy-src"):
+            if a.get(k):
+                cands.append(a[k])
+        if a.get("srcset") or a.get("data-srcset"):
+            first = (a.get("srcset") or a.get("data-srcset")).split(",")[0].strip().split()
+            if first:
+                cands.append(first[0])
+        for ref in cands:
+            img_entries.append((tag, ref, base))
+        return tag
+
+    text = IMG_RE.sub(do_img_collect, text)
+
+    #fetch all external stylesheets concurrently ------------------------------------
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    css_texts = {}
+    if css_links:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futs = {ex.submit(page._fetch_css, u): u for u in css_links}
+            for f in as_completed(futs):
+                css_texts[futs[f]] = f.result()
+
+    #find all image refs inside all CSS ---------------------------------------------
+    for u, ct in css_texts.items():
+        for m in CSS_URL_RE.finditer(ct):
+            ref = m.group(2).strip()
+            if ref.startswith("#") or ref.startswith("data:font") \
+                    or ref.startswith("data:application/font") or ref.startswith("data:image/svg"):
+                continue
+            ext = os.path.splitext(ref.split("?")[0].split("#")[0])[1].lower()
+            if ext in (".woff", ".woff2", ".ttf", ".otf", ".eot", ".svg", ".cur", ".ico"):
+                continue
+            img_entries.append(("<css>", ref, u))
+
+    #cache time!11 ------------------------------------------------------------------
+    unique = {}
+    for tag, ref, ref_base in img_entries:
+        key = ref if ref.startswith("data:") else urljoin(ref_base, ref)
+        unique.setdefault(key, (ref, ref_base))
+    if unique:
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            futs = {ex.submit(page.image, ref, rb): key
+                    for key, (ref, rb) in unique.items()}
+            for f in as_completed(futs):
+                f.result()
+
+    #rewrite HTML using cache ------------------------------------------------------
     def do_link(m):
         a = _attrs(m.group(0))
         if "stylesheet" not in a.get("rel", "").lower() or not a.get("href"):
@@ -323,21 +452,23 @@ def fetch_page(url):
             got = _decode_data_uri(href)
             css = page.process_css(got[0].decode("utf-8", "replace"), base) if got else ""
         else:
-            css = page.css(urljoin(base, href))
+            u = urljoin(base, href)
+            css = page.process_css(css_texts.get(u, ""), u)
         return "<style>%s</style>" % css if css else ""
 
     text = LINK_RE.sub(do_link, text)
 
     # inline <style> blocks: @import + url()
     text = STYLE_RE.sub(
-        lambda m: m.group(1) + page.process_css(m.group(2), base) + m.group(3), text)
+        lambda m: m.group(1) + _rewrite_css_urls(page.process_css(m.group(2), base), page, base)
+        + m.group(3), text)
 
     # style="...url(...)" attributes
     text = re.sub(r"""style\s*=\s*"([^"]*url\([^"]*)\"""",
-                  lambda m: 'style="%s"' % page.process_css(m.group(1), base).replace('"', "'"),
+                  lambda m: 'style="%s"' % _rewrite_css_urls(
+                      page.process_css(m.group(1), base), page, base).replace('"', "'"),
                   text, flags=re.I)
 
-    # <img>: pick src (or lazy-load data-src / first srcset entry), cache it
     def do_img(m):
         tag = m.group(0)
         a = _attrs(tag)

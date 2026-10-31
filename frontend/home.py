@@ -345,12 +345,23 @@ def page_title(html, fallback):
 def navigate(stdscr, tab, q):
     h, w = stdscr.getmaxyx()
     put(stdscr, h - 1, 0, " " * w, attr(P_PANEL))
-    put(stdscr, h - 1, 1, "loading…", attr(P_ACCENT, curses.A_BOLD))
-    stdscr.refresh()
 
+    state = {"name": "", "t0": 0.0}
+
+    def status(name, elapsed=None):
+        if elapsed is None:
+            state["name"], state["t0"] = name, time.monotonic()
+            text = name + "…"
+        else:
+            text = f"{name} {elapsed:.1f}s"
+        put(stdscr, h - 1, 0, " " * w, attr(P_PANEL))
+        put(stdscr, h - 1, 1, text, attr(P_ACCENT, curses.A_BOLD))
+        stdscr.refresh()
+
+    status("fetch", None)
     url, base_dir = resolve_query(q)
     try:
-        html = fetch.fetch_page(url)
+        html = fetch.fetch_page(url, on_status=status)
     except Exception as e:
         log_error(f"fetch_page failed for {url}", e)
         tab.mode, tab.title, tab.message, tab.size = "error", "error", str(e), None
@@ -362,6 +373,12 @@ def navigate(stdscr, tab, q):
     tab.mode, tab.html, tab.base_dir, tab.size = "page", html, base_dir, None
     tab.title = page_title(html, fallback)
     tab.scroll = 0
+
+    rows = h - TAB_STRIP_H
+    status("render", None)
+    tab.palette, tab.grid = render_to_grid(tab.html, w, rows, tab.base_dir,
+                                           on_status=status)
+    tab.size = (w, rows)
 
 
 def draw_page(scr, tab, w, h):

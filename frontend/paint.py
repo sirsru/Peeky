@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from datetime import datetime
 
@@ -147,22 +148,37 @@ def _extract_css(html, base_dir=None):
     return b"\n".join(css_parts)
 
 
-def run_pipeline(html_bytes, viewport_w=80, viewport_h=24, base_dir=None, term_cols=None, term_rows=None):
+def run_pipeline(html_bytes, viewport_w=80, viewport_h=24, base_dir=None, term_cols=None, term_rows=None,
+                 on_status=None):
+    t0 = time.monotonic()
+
+    def tick(name):
+        nonlocal t0
+        if on_status:
+            on_status(name, time.monotonic() - t0)
+        t0 = time.monotonic()
+
     try:
+        on_status("tokenize", None)
         #tokenizing
         tok = _run_stage("tokenize", stdin_data=html_bytes)
+        tick("tokenize")
         if not tok:
             return {}, 0, 0, []
+        on_status("tree", None)
         #tree
         dom = _run_stage("tree", stdin_data=tok)
+        tick("tree")
         if not dom:
             return {}, 0, 0, []
-        #cssom 
+        #cssom
         css_raw = _extract_css(html_bytes, base_dir)
+        on_status("cssom", None)
         cssom = _run_stage("cssom", stdin_data=css_raw) if css_raw.strip() else b"#stylesheet\n"
+        tick("cssom")
         if not cssom:
             return {}, 0, 0, []
-        #render-tree 
+        #render-tree
         with tempfile.NamedTemporaryFile(delete=False, suffix=".cssom") as cf:
             cf.write(cssom)
             cssom_path = cf.name
@@ -170,26 +186,32 @@ def run_pipeline(html_bytes, viewport_w=80, viewport_h=24, base_dir=None, term_c
             df.write(dom)
             dom_path = df.name
         try:
+            on_status("render-tree", None)
             rt = _run_stage("render-tree", args=[cssom_path, dom_path])
         finally:
             os.unlink(cssom_path)
             os.unlink(dom_path)
+        tick("render-tree")
         if not rt:
             return {}, 0, 0, []
-        #layout 
+        #layout
         browser_w = 1280
         if term_cols is None:
             term_cols = viewport_w // 2
         if term_rows is None:
             term_rows = viewport_h // 2
+        on_status("layout", None)
         layout = _run_stage("layout", args=[str(browser_w), str(term_cols), str(term_rows)], stdin_data=rt)
+        tick("layout")
         if not layout:
             return {}, 0, 0, []
-        #paint 
+        #paint
+        on_status("paint", None)
         paint_args = []
         if base_dir:
             paint_args.extend(["--base-dir", base_dir])
         paint = _run_stage("paint", args=paint_args, stdin_data=layout)
+        tick("paint")
         if not paint:
             return {}, 0, 0, []
         return parse_dump(io.StringIO(paint.decode("utf-8", "replace")))
@@ -198,9 +220,9 @@ def run_pipeline(html_bytes, viewport_w=80, viewport_h=24, base_dir=None, term_c
         return {}, 0, 0, []
 
 
-def render_to_grid(html_bytes, cols, rows, base_dir=None):
+def render_to_grid(html_bytes, cols, rows, base_dir=None, on_status=None):
     palette, _c, _r, grid = run_pipeline(html_bytes, cols * 2, rows * 2,
-                                         base_dir, cols, rows)
+                                         base_dir, cols, rows, on_status)
     return palette, grid
 
 

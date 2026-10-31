@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import html as htmllib
 import base64
 import hashlib
@@ -342,11 +343,19 @@ def _rewrite_css_urls(text, page, base):
     return CSS_URL_RE.sub(do_url, text)
 
 
-def fetch_page(url):
+def fetch_page(url, on_status=None):
     if url.startswith("file://"):
         return _read_local(url)
 
+    def mark(name, started):
+        if on_status:
+            on_status(name, time.monotonic() - started)
+
+    started = time.monotonic()
+    if on_status:
+        on_status("fetch", None)
     body, final, ctype = _fetch_page_raw(url)
+    mark("fetch", started)
     if not body:
         return body
     text = _decode_html(body, ctype)
@@ -414,6 +423,7 @@ def fetch_page(url):
             futs = {ex.submit(page._fetch_css, u): u for u in css_links}
             for f in as_completed(futs):
                 css_texts[futs[f]] = f.result()
+    mark("css", started)
 
     #find all image refs inside all CSS ---------------------------------------------
     for u, ct in css_texts.items():
@@ -438,6 +448,7 @@ def fetch_page(url):
                     for key, (ref, rb) in unique.items()}
             for f in as_completed(futs):
                 f.result()
+    mark("imgs", started)
 
     #rewrite HTML using cache ------------------------------------------------------
     def do_link(m):
@@ -487,4 +498,5 @@ def fetch_page(url):
         return tag
 
     text = IMG_RE.sub(do_img, text)
+    mark("html", started)
     return text.encode("utf-8", "replace")

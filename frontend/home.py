@@ -350,9 +350,9 @@ def navigate(stdscr, tab, q):
 
     url, base_dir = resolve_query(q)
     try:
-        html = fetch.fetch_html(url)
+        html = fetch.fetch_page(url)
     except Exception as e:
-        log_error(f"fetch_html failed for {url}", e)
+        log_error(f"fetch_page failed for {url}", e)
         tab.mode, tab.title, tab.message, tab.size = "error", "error", str(e), None
         return
     if isinstance(html, str):

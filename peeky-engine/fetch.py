@@ -274,8 +274,15 @@ def _set_attr(tag, name, value):
 
 def _decode_html(body, ctype):
     m = re.search(r"charset\s*=\s*([\w-]+)", ctype, re.I) or META_CHARSET_RE.search(body[:4096])
-    enc = m.group(1) if isinstance(m.group(1), str) else m.group(1).decode("ascii", "ignore")
+    if m:
+        enc = m.group(1)
+        if not isinstance(enc, str):
+            enc = enc.decode("ascii", "ignore")
+    else:
+        enc = None
     for e in (enc, "utf-8"):
+        if not e:
+            continue
         try:
             return body.decode(e)
         except (LookupError, UnicodeDecodeError):

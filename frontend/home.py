@@ -10,7 +10,6 @@ import curses
 import random
 import termios
 import time
-import webbrowser
 import traceback
 import textwrap
 from datetime import datetime
@@ -534,7 +533,7 @@ def draw_home(stdscr):
                     sel = (sel + (-1 if key == 353 else 1)) % len(SELECTABLES)
                 elif key in (10, 13, curses.KEY_ENTER):
                     if sel == 1:
-                        webbrowser.open("https://github.com")
+                        navigate(stdscr, tab, "github.com")
                     elif sel == 2:
                         settings.draw_settings(stdscr)
                     elif sel == 0 and can_box:

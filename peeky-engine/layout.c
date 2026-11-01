@@ -488,10 +488,11 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
                 y = layout_inline_run(box, n, i, j, child_x, y, child_w, align);
                 i = j;
             } else {
+                float cm_t = parse_prop_f(n->kids[i], "margin-top");
                 float cm_b = parse_prop_f(n->kids[i], "margin-bottom");
                 LayoutBox *c = build_box(n->kids[i], child_x, y, child_w);
                 push_child(box, c);
-                y += c->bounds.height + cm_b;
+                y += cm_t + c->bounds.height + cm_b;
                 i++;
             }
         }
@@ -521,11 +522,12 @@ LayoutBox *layout_tree(FILE *fp, float viewport_w, float viewport_h) {
     float current_y = 0;
     for (int i = 0; i < root->kid_n; i++) {
         if (node_display(root->kids[i]) == DISPLAY_NONE) continue;
+        float cm_t = parse_prop_f(root->kids[i], "margin-top");
         float cm_b = parse_prop_f(root->kids[i], "margin-bottom");
         LayoutBox *child = build_box(root->kids[i], 0, current_y, scale_w);
         layout->children = realloc(layout->children, sizeof(LayoutBox *) * (layout->child_count + 1));
         layout->children[layout->child_count++] = child;
-        current_y += child->bounds.height + cm_b;
+        current_y += cm_t + child->bounds.height + cm_b;
     }
 
     float content_h = current_y;

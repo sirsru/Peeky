@@ -64,6 +64,8 @@ EYE_CLOSED = ["     ",
               "     "]
 
 HINT = "type to search | ctrl+q to quit"
+SHORTCUT_1 = "ctrl+t new tab | ctrl+w close tab"
+SHORTCUT_2 = "ctrl+n/p next/prev tab | ctrl+l address bar"
 
 BLINK_SHUT = 0.14
 BLINK_GAP = (2.6, 5.2)
@@ -272,7 +274,20 @@ def draw_screen(scr, eyes_open, sel=0):
     highlight_box = can_box and sel == 0
     if can_box:
         draw_box(scr, bx, by, box_w, highlight=highlight_box)
-        put(scr, by + 4, bx + (box_w - len(HINT)) // 2, HINT, mut() if not highlight_box else attr(P_ACCENT, curses.A_BOLD))
+        hint_a = mut() if not highlight_box else attr(P_ACCENT, curses.A_BOLD)
+        put(scr, by + 4, bx + (box_w - len(HINT)) // 2, HINT, hint_a)
+        if can_box and h > by + 6:
+            s1 = SHORTCUT_1[:max(box_w - 4, 0)]
+            s2 = SHORTCUT_2[:max(box_w - 4, 0)]
+            cx = (box_w - 1) // 2
+            p1 = s1.find("|")
+            p2 = s2.find("|")
+            x1 = bx + cx - p1
+            x2 = bx + cx - p2
+            x1 = max(bx + 1, min(x1, bx + box_w - len(s1) - 1))
+            x2 = max(bx + 1, min(x2, bx + box_w - len(s2) - 1))
+            put(scr, by + 5, x1, s1, hint_a)
+            put(scr, by + 6, x2, s2, hint_a)
 
     if h >= 2 and w >= 24:
         github_attr = attr(P_ACCENT, curses.A_BOLD) if sel == 1 else mut()

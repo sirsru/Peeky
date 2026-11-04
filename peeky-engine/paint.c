@@ -512,7 +512,8 @@ static int is_replaced(Box *b) {
     return (strcmp(b->label, "img") == 0 ||
             strcmp(b->label, "input") == 0 ||
             strcmp(b->label, "textarea") == 0 ||
-            strcmp(b->label, "select") == 0);
+            strcmp(b->label, "select") == 0 ||
+            strcmp(b->label, "frame") == 0);
 }
 
 static void paint_boxes(Box *b, Color inherit_fg, Color inherit_bg) {
@@ -885,6 +886,21 @@ static void overlay_replaced(Box *b) {
                 draw_rect_border(cc0, rr0, cc1, rr1, fg, bg);
                 place_alt_text(cc0, rr0, cc1, rr1, b->label, fg, bg);
             }
+        }
+    } else if (!strcmp(b->label, "frame")) {
+        int cc0, rr0, cc1, rr1;
+        cell_rect(b, &cc0, &rr0, &cc1, &rr1);
+        cc1--; rr1--;
+        if (cc0 < 0) cc0 = 0;
+        if (rr0 < 0) rr0 = 0;
+        if (cc1 >= g_cols) cc1 = g_cols - 1;
+        if (rr1 >= g_rows) rr1 = g_rows - 1;
+        if (cc0 <= cc1 && rr0 <= rr1) {
+            Color fg = b->has_border ? b->border_color : RGB(0x66, 0x66, 0x66);
+            Color bg = b->has_bg ? b->bg : BG_DEFAULT;
+            draw_rect_border(cc0, rr0, cc1, rr1, fg, bg);
+            const char *label = b->image_src && *b->image_src ? b->image_src : "FRAME";
+            place_alt_text(cc0, rr0, cc1, rr1, label, fg, bg);
         }
     } else if (!strcmp(b->label, "input") || !strcmp(b->label, "textarea") ||
                !strcmp(b->label, "select")) {

@@ -869,6 +869,10 @@ static void collect_presentational(DomNode *e) {
             add_cand(0, -1, -1, "image-src", v);
         }
     }
+    if (!strcmp(e->name, "frame")) {
+        if ((v = attr_get(e, "src")))
+            add_cand(0, -1, -1, "image-src", v);
+    }
 }
 
 static void collect_inline(DomNode *e) {
@@ -1035,6 +1039,10 @@ static void compute_style(DomNode *e, Map *parent, Map *out) {
     if (width) map_set(out, "width", width);
     const char *height = attr_get(e, "height");
     if (height) map_set(out, "height", height);
+    const char *cols = attr_get(e, "cols");
+    if (cols) map_set(out, "cols", cols);
+    const char *rows = attr_get(e, "rows");
+    if (rows) map_set(out, "rows", rows);
     const char *align = attr_get(e, "align");
     if (align) map_set(out, "text-align", align);
     const char *valign = attr_get(e, "valign");

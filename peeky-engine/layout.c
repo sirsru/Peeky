@@ -15,6 +15,8 @@
 
 static float g_kx = 1.0f, g_ky = 1.0f;
 static float g_css_per_cell;
+static float g_viewport_h;
+typedef struct { float v; int is_rel; int is_pct; } Track;
 
 static RenderNode **g_tmp_nodes = NULL;
 static size_t g_tmp_n = 0, g_tmp_cap = 0;
@@ -39,6 +41,85 @@ static void tmp_nodes_free(void) {
 static const char *node_prop(RenderNode *n, const char *prop);
 static LayoutBox *build_box(RenderNode *, float, float, float);
 static void shift_box(LayoutBox *, float, float);
+static void push_child(LayoutBox *box, LayoutBox *c);
+
+static LayoutBox *box_new(RenderNode *n, float x, float y, float w, float h) {
+    LayoutBox *b = calloc(1, sizeof *b);
+    b->node = n; b->display = DISPLAY_BLOCK;
+    b->bounds = (LayoutRect){x, y, w, h};
+    return b;
+}
+
+static int parse_track_list(const char *s, Track **out) {
+    Track *tr = NULL; int n = 0, cap = 0; const char *p = s;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        const char *st = p;
+        while (*p && *p != ',') p++;
+        if (p == st) { if (*p) p++; continue; }
+        const char *en = p;
+        while (en > st && (en[-1] == ' ' || en[-1] == '\t')) en--;
+        char tok[64]; size_t tl = (size_t)(en - st);
+        if (tl >= sizeof tok) tl = sizeof tok - 1;
+        memcpy(tok, st, tl); tok[tl] = '\0';
+        if (*p == ',') p++;
+        float v = 0.0f; int is_rel = 0, is_pct = 0;
+        size_t tlen = strlen(tok);
+        if (tlen && tok[tlen - 1] == '%') { tok[tlen - 1] = '\0'; v = strtof(tok, NULL); is_pct = 1; }
+        else if (tlen && tok[tlen - 1] == '*') { tok[tlen - 1] = '\0'; v = strtof(tok, NULL); if (v <= 0) v = 1; is_rel = 1; }
+        else v = strtof(tok, NULL);
+        if (n >= cap) { cap = cap ? cap * 2 : 8; tr = realloc(tr, sizeof(*tr) * (size_t)cap); }
+        tr[n].v = v; tr[n].is_rel = is_rel; tr[n].is_pct = is_pct; n++;
+    }
+    if (n == 0) { tr = malloc(sizeof(*tr)); tr[0].v = 100; tr[0].is_rel = 0; tr[0].is_pct = 1; n = 1; }
+    *out = tr; return n;
+}
+
+static void split_tracks(float total, Track *tr, int n, float **out) {
+    float *sizes = malloc(sizeof(float) * (size_t)n);
+    float px_sum = 0, pct_sum = 0, rel_sum = 0; int rel_n = 0;
+    for (int i = 0; i < n; i++) {
+        if (tr[i].is_rel) { rel_sum += tr[i].v; rel_n++; }
+        else if (tr[i].is_pct) pct_sum += tr[i].v;
+        else px_sum += tr[i].v;
+    }
+    float remaining = total - px_sum - (pct_sum / 100.0f) * total;
+    if (remaining < 0) remaining = 0;
+    for (int i = 0; i < n; i++) {
+        if (tr[i].is_rel) sizes[i] = rel_sum > 0 ? remaining * (tr[i].v / rel_sum) : remaining / (float)rel_n;
+        else if (tr[i].is_pct) sizes[i] = tr[i].v / 100.0f * total;
+        else sizes[i] = tr[i].v;
+    }
+    *out = sizes;
+}
+
+static LayoutBox *build_frameset_box(RenderNode *n, float x, float y, float w, float h) {
+    LayoutBox *box = box_new(n, x, y, w, h);
+    Track *rows = NULL, *cols = NULL;
+    int rn = parse_track_list(node_prop(n, "rows") ?: "100%", &rows);
+    int cn = parse_track_list(node_prop(n, "cols") ?: "100%", &cols);
+    float *rs = NULL, *cs = NULL;
+    split_tracks(h, rows, rn, &rs);
+    split_tracks(w, cols, cn, &cs);
+    int ki = 0;
+    float cy = y;
+    for (int r = 0; r < rn; r++) {
+        float cx = x;
+        for (int c = 0; c < cn; c++) {
+            while (ki < n->kid_n && (!n->kids[ki] || !n->kids[ki]->tag)) ki++;
+            if (ki >= n->kid_n) break;
+            RenderNode *k = n->kids[ki++];
+            LayoutBox *cb = !strcmp(k->tag, "frameset")
+                ? build_frameset_box(k, cx, cy, cs[c], rs[r])
+                : box_new(k, cx, cy, cs[c], rs[r]);
+            push_child(box, cb);
+            cx += cs[c];
+        }
+        cy += rs[r];
+    }
+    free(rows); free(cols); free(rs); free(cs);
+    return box;
+}
 
 static RenderNode *node_new(const char *tag, const char *text) {
     RenderNode *n = calloc(1, sizeof(RenderNode));
@@ -363,6 +444,11 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
 
     box->display = node_display(n);
     if (box->display == DISPLAY_NONE) return box;
+    if (n->tag && !strcmp(n->tag, "frameset")) {
+        LayoutBox *fb = build_frameset_box(n, x, y, avail_w, g_viewport_h);
+        free(box);
+        return fb;
+    }
 
     if (!n->tag && n->text) {
         box->bounds.x = x;
@@ -508,6 +594,7 @@ LayoutBox *layout_tree(FILE *fp, float viewport_w, float viewport_h) {
     RenderNode *root = parse_render_tree(fp);
     float scale_w = viewport_w * SCALE;
     float scale_h = viewport_h * SCALE;
+    g_viewport_h = scale_h;
 
     LayoutBox *layout = calloc(1, sizeof(LayoutBox));
     layout->node = root;

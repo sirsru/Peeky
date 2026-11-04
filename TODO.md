@@ -88,4 +88,6 @@
 
 - [x] image cache (png/jpg/etc, max 60, 8MB cap)
 
-- [ ] persistent cookies, auth
+- [x] persistent cookies
+
+- [ ] auth

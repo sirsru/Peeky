@@ -10,6 +10,7 @@ from urllib.parse import urljoin, unquote_to_bytes
 FIREFOX_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
 
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "peeky")
+COOKIE_JAR = os.path.join(CACHE_DIR, "cookies.txt")
 MAX_RESOURCE = 8 * 1024 * 1024
 MAX_IMAGES = 60
 MAX_CSS_DEPTH = 5
@@ -66,7 +67,9 @@ def _request(url, accept, ua=FIREFOX_UA, referer=None, timeout=30, limit=None):
         c.setopt(pycurl.FOLLOWLOCATION, 1)
         c.setopt(pycurl.MAXREDIRS, 10)
         c.setopt(pycurl.AUTOREFERER, 1)
-        c.setopt(pycurl.COOKIEFILE, "")           # in-memory cookie jar (needed by redirect chains)
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        c.setopt(pycurl.COOKIEFILE, COOKIE_JAR) # load persistent cookies
+        c.setopt(pycurl.COOKIEJAR, COOKIE_JAR) # save persistent cookies
         c.setopt(pycurl.TIMEOUT, timeout)
         c.setopt(pycurl.CONNECTTIMEOUT, 10)
         c.setopt(pycurl.WRITEFUNCTION, write)

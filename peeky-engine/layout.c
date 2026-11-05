@@ -16,6 +16,9 @@
 static float g_kx = 1.0f, g_ky = 1.0f;
 static float g_css_per_cell;
 static float g_viewport_h;
+static int g_list_counter = 0;
+static int g_li_ordinal = 0;
+static int g_list_is_ol = 0;
 typedef struct { float v; int is_rel; int is_pct; } Track;
 
 static RenderNode **g_tmp_nodes = NULL;
@@ -488,6 +491,22 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
     float child_w = width - b_l - b_r - p_l - p_r;
     if (child_w < 0) child_w = 0;
 
+    float marker_w = 0.0f;
+    float marker_x = child_x;
+    char mbuf[16] = {0};
+    int is_li = n->tag && !strcmp(n->tag, "li");
+    if (is_li) {
+        if (g_list_is_ol)
+            snprintf(mbuf, sizeof mbuf, "%d. ", g_li_ordinal);
+        else
+            snprintf(mbuf, sizeof mbuf, "* ");
+        marker_w = g_css_per_cell * (float)strlen(mbuf);
+        child_x += marker_w;
+        child_w -= marker_w;
+        if (child_w < 0) child_w = 0;
+        marker_x = child_x - marker_w;
+    }
+
     int is_replaced = n->tag && (!strcmp(n->tag, "img") || !strcmp(n->tag, "input") ||
                              !strcmp(n->tag, "textarea") || !strcmp(n->tag, "select"));
     if (is_replaced && (w_prop > 0 || h_prop > 0)) {
@@ -565,6 +584,8 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
         int align = node_align(n);
         float y = child_y;
         int i = 0;
+        if (n->tag && (!strcmp(n->tag, "ol") || !strcmp(n->tag, "ul")))
+            g_list_counter = 0;
         while (i < n->kid_n) {
             DisplayType d = node_display(n->kids[i]);
             if (d == DISPLAY_NONE) { i++; continue; }
@@ -574,6 +595,11 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
                 y = layout_inline_run(box, n, i, j, child_x, y, child_w, align);
                 i = j;
             } else {
+                if (n->kids[i]->tag && !strcmp(n->kids[i]->tag, "li")) {
+                    g_list_counter++;
+                    g_li_ordinal = g_list_counter;
+                    g_list_is_ol = n->tag && !strcmp(n->tag, "ol");
+                }
                 float cm_t = parse_prop_f(n->kids[i], "margin-top");
                 float cm_b = parse_prop_f(n->kids[i], "margin-bottom");
                 LayoutBox *c = build_box(n->kids[i], child_x, y, child_w);
@@ -586,6 +612,19 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
             box->bounds.height = box->child_count
                 ? (y - child_y) + p_t + p_b + b_t + b_b
                 : p_t + p_b + b_t + b_b + 20.0f;
+    }
+
+    if (is_li && marker_w > 0) {
+        RenderNode *mn = node_new(NULL, mbuf);
+        tmp_node_track(mn);
+        LayoutBox *mb = calloc(1, sizeof *mb);
+        mb->node = mn;
+        mb->display = DISPLAY_INLINE;
+        mb->bounds.x = marker_x;
+        mb->bounds.y = child_y;
+        mb->bounds.width = marker_w;
+        mb->bounds.height = TEXT_LINE_H;
+        push_child(box, mb);
     }
     return box;
 }

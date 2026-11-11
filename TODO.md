@@ -44,7 +44,7 @@
 
 - [ ] text-decoration, text-transform, line-height, letter-spacing
 
-- [ ] float, position, flex, grid
+- [x] float, position, flex, grid
 
 - [ ] :hover / :active / :focus / :link / :visited / :target states
 
@@ -62,7 +62,7 @@
 
 - [ ] margin collapse
 
-- [ ] float, position, flex, grid
+- [x] float, position, flex, grid
 
 
 

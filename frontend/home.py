@@ -238,13 +238,15 @@ def draw_box(scr, bx, by, box_w, box_h=3, highlight=False):
     put(scr, by + 1, bx + 4, "search or type a url", hint_attr)
 
 
-def scroll_key(tab, key, view):
+def scroll_key(tab, key, view, instant):
     max_s = max(0, len(tab.grid) - view)
     page = max(1, view - 1)
     step = {curses.KEY_UP: -1, ord("k"): -1, curses.KEY_DOWN: 1, ord("j"): 1,
             curses.KEY_PPAGE: -page, ord("b"): -page,
             curses.KEY_NPAGE: page, ord(" "): page}.get(key)
     if step is not None:
+        if instant:
+            step = view if step > 0 else -view
         new = tab.scroll + step
     elif key in (curses.KEY_HOME, ord("g")):
         new = 0
@@ -516,11 +518,14 @@ def draw_home(stdscr):
                         elif kind == "tab":
                             active = i
                 elif tab.mode == "page":
-                    max_s = max(0, len(tab.grid) - (h - TAB_STRIP_H))
+                    view = h - TAB_STRIP_H
+                    max_s = max(0, len(tab.grid) - view)
+                    instant = settings.SETTINGS.get("scrolling") == "instant"
+                    jump = view if instant else 3
                     if bstate & WHEEL_UP:
-                        tab.scroll = max(0, tab.scroll - 3)
+                        tab.scroll = max(0, tab.scroll - jump)
                     elif bstate & WHEEL_DOWN:
-                        tab.scroll = min(max_s, tab.scroll + 3)
+                        tab.scroll = min(max_s, tab.scroll + jump)
             elif key == 20:                          # ctrl+t: new tab
                 tabs.append(Tab())
                 active, sel = len(tabs) - 1, 0
@@ -542,7 +547,8 @@ def draw_home(stdscr):
                     if q:
                         navigate(stdscr, tab, q)
             elif tab.mode == "page":
-                scroll_key(tab, key, h - TAB_STRIP_H)
+                scroll_key(tab, key, h - TAB_STRIP_H,
+                           settings.SETTINGS.get("scrolling") == "instant")
             elif tab.mode == "home":
                 if key in (9, 353):
                     sel = (sel + (-1 if key == 353 else 1)) % len(SELECTABLES)

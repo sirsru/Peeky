@@ -24,10 +24,18 @@ typedef enum {
     DISPLAY_UNKNOWN
 } DisplayType;
 
+typedef enum { POS_STATIC, POS_RELATIVE, POS_ABSOLUTE, POS_FIXED } PositionType;
+typedef enum { FLOAT_NONE, FLOAT_LEFT, FLOAT_RIGHT } FloatType;
+
 typedef struct LayoutBox {
     LayoutRect bounds;
+    LayoutRect content; // padding box
     RenderNode *node;
     DisplayType display;
+    PositionType position;
+    FloatType ftype;
+    float top, left, bottom, right;
+    struct LayoutBox *parent;
     struct LayoutBox **children;
     size_t child_count;
 } LayoutBox;

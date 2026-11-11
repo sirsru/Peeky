@@ -9,14 +9,17 @@ SETTINGS = {
     "render_type": "text as text",
     "block_images": False,
     "block_scripts": False,
+    "scrolling": "smoothed",
 }
 
 RENDER_OPTIONS = ["text as text", "all as grid"]
+SCROLL_OPTIONS = ["smoothed", "instant"]
 SELECTABLE_KEYS = [
     ("search_engine", "Search engine"),
     ("render_type", "Render type"),
     ("block_images", "Block images"),
     ("block_scripts", "Block scripts"),
+    ("scrolling", "Scrolling"),
 ]
 
 
@@ -145,6 +148,9 @@ def draw_settings(stdscr):
             if key_name == "render_type":
                 idx = RENDER_OPTIONS.index(SETTINGS["render_type"])
                 SETTINGS["render_type"] = RENDER_OPTIONS[(idx + 1) % len(RENDER_OPTIONS)]
+            elif key_name == "scrolling":
+                idx = SCROLL_OPTIONS.index(SETTINGS["scrolling"])
+                SETTINGS["scrolling"] = SCROLL_OPTIONS[(idx + 1) % len(SCROLL_OPTIONS)]
             elif isinstance(SETTINGS[key_name], bool):
                 SETTINGS[key_name] = not SETTINGS[key_name]
             else:

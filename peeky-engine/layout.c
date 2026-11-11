@@ -53,19 +53,18 @@ static LayoutBox *box_new(RenderNode *n, float x, float y, float w, float h) {
     return b;
 }
 
+static int track_sep(char c) { return c == ',' || c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+
 static int parse_track_list(const char *s, Track **out) {
     Track *tr = NULL; int n = 0, cap = 0; const char *p = s;
     while (*p) {
-        while (*p == ' ' || *p == '\t') p++;
+        while (track_sep(*p)) p++;
         const char *st = p;
-        while (*p && *p != ',') p++;
+        while (*p && !track_sep(*p)) p++;
         if (p == st) { if (*p) p++; continue; }
-        const char *en = p;
-        while (en > st && (en[-1] == ' ' || en[-1] == '\t')) en--;
-        char tok[64]; size_t tl = (size_t)(en - st);
+        char tok[64]; size_t tl = (size_t)(p - st);
         if (tl >= sizeof tok) tl = sizeof tok - 1;
         memcpy(tok, st, tl); tok[tl] = '\0';
-        if (*p == ',') p++;
         float v = 0.0f; int is_rel = 0, is_pct = 0;
         size_t tlen = strlen(tok);
         if (tlen && tok[tlen - 1] == '%') { tok[tlen - 1] = '\0'; v = strtof(tok, NULL); is_pct = 1; }
@@ -439,6 +438,183 @@ static void shift_box(LayoutBox *b, float dx, float dy) {
         shift_box(b->children[i], dx, dy);
 }
 
+static PositionType node_position(RenderNode *n) {
+    const char *v = node_prop(n, "position");
+    if (!v) return POS_STATIC;
+    if (!strcmp(v, "relative")) return POS_RELATIVE;
+    if (!strcmp(v, "absolute")) return POS_ABSOLUTE;
+    if (!strcmp(v, "fixed")) return POS_FIXED;
+    return POS_STATIC;
+}
+
+static FloatType node_float(RenderNode *n) {
+    const char *v = node_prop(n, "float");
+    if (!v) return FLOAT_NONE;
+    if (!strcmp(v, "left")) return FLOAT_LEFT;
+    if (!strcmp(v, "right")) return FLOAT_RIGHT;
+    return FLOAT_NONE;
+}
+
+static int is_flex(RenderNode *n) {
+    return prop_is(n, "display", "flex") || prop_is(n, "display", "inline-flex");
+}
+
+static int is_grid(RenderNode *n) {
+    return prop_is(n, "display", "grid") || prop_is(n, "display", "inline-grid");
+}
+
+static float natural_width(LayoutBox *b) {
+    float mx = b->bounds.x + b->bounds.width;
+    for (size_t i = 0; i < b->child_count; i++) {
+        float cw = natural_width(b->children[i]);
+        if (cw > mx) mx = cw;
+    }
+    return mx;
+}
+
+static float natural_height(LayoutBox *b) {
+    float my = b->bounds.y + b->bounds.height;
+    for (size_t i = 0; i < b->child_count; i++) {
+        float ch = natural_height(b->children[i]);
+        if (ch > my) my = ch;
+    }
+    return my;
+}
+
+typedef struct { float x, y, w, h; int side; } FloatPlaced;
+
+static void float_usage(FloatPlaced *fls, int n, float y, float h,
+                        float *left_w, float *right_w) {
+    *left_w = 0; *right_w = 0;
+    float y1 = y + h;
+    for (int i = 0; i < n; i++) {
+        if (fls[i].y >= y1 || fls[i].y + fls[i].h <= y) continue;
+        if (fls[i].side == FLOAT_LEFT) *left_w += fls[i].w;
+        else *right_w += fls[i].w;
+    }
+}
+
+static LayoutBox *containing_block(LayoutBox *b) {
+    LayoutBox *p = b->parent;
+    while (p) {
+        if (p->position != POS_STATIC) return p;
+        p = p->parent;
+    }
+    return NULL;
+}
+
+static void place_positioned(LayoutBox *c, LayoutBox *box) {
+    LayoutBox *cb = containing_block(c);
+    LayoutRect cbr = cb ? cb->content : box->content;
+    float cbx = cbr.x, cby = cbr.y, cbw = cbr.width, cbh = cbr.height;
+    float top = parse_len(c->node, "top", cbh);
+    float left = parse_len(c->node, "left", cbw);
+    float bottom = parse_len(c->node, "bottom", cbh);
+    float right = parse_len(c->node, "right", cbw);
+    int has_l = node_prop(c->node, "left") != NULL;
+    int has_r = node_prop(c->node, "right") != NULL;
+    int has_t = node_prop(c->node, "top") != NULL;
+    int has_b = node_prop(c->node, "bottom") != NULL;
+    float x, y;
+    if (has_l) x = cbx + left;
+    else if (has_r) x = cbx + cbw - right - c->bounds.width;
+    else x = cbx;
+    if (has_t) y = cby + top;
+    else if (has_b) y = cby + cbh - bottom - c->bounds.height;
+    else y = cby;
+    shift_box(c, x - c->bounds.x, y - c->bounds.y);
+}
+
+static void layout_flex(LayoutBox *box, RenderNode *n, float cx, float cy,
+                        float cw, float h_prop, float pt, float pb,
+                        float bt, float bb);
+static void layout_grid(LayoutBox *box, RenderNode *n, float cx, float cy,
+                        float cw, float h_prop, float pt, float pb,
+                        float bt, float bb);
+
+static void layout_block_children(LayoutBox *box, RenderNode *n,
+                                  float cx, float cy, float cw, int align,
+                                  float h_prop, float pt, float pb,
+                                  float bt, float bb) {
+    FloatPlaced *fls = NULL; int fl_n = 0, fl_cap = 0;
+    float fc_l = cy, fc_r = cy;
+    LayoutBox **poskids = NULL; int pn = 0, pcap = 0;
+    float y = cy;
+    int i = 0;
+    if (n->tag && (!strcmp(n->tag, "ol") || !strcmp(n->tag, "ul")))
+        g_list_counter = 0;
+    while (i < n->kid_n) {
+        RenderNode *k = n->kids[i];
+        if (node_display(k) == DISPLAY_NONE) { i++; continue; }
+        PositionType kp = node_position(k);
+        FloatType kfl = node_float(k);
+        if (kp == POS_ABSOLUTE || kp == POS_FIXED) {
+            LayoutBox *c = build_box(k, 0, 0, cw);
+            if (pn >= pcap) { pcap = pcap ? pcap * 2 : 4;
+                poskids = realloc(poskids, sizeof(LayoutBox *) * (size_t)pcap); }
+            poskids[pn++] = c;
+            i++;
+            continue;
+        }
+        if (kfl != FLOAT_NONE) {
+            LayoutBox *c = build_box(k, 0, 0, cw);
+            float fy = (kfl == FLOAT_LEFT) ? fc_l : fc_r;
+            float fx = (kfl == FLOAT_LEFT) ? cx : cx + cw - c->bounds.width;
+            shift_box(c, fx - c->bounds.x, fy - c->bounds.y);
+            push_child(box, c);
+            if (fl_n >= fl_cap) { fl_cap = fl_cap ? fl_cap * 2 : 4;
+                fls = realloc(fls, sizeof(FloatPlaced) * (size_t)fl_cap); }
+            fls[fl_n] = (FloatPlaced){fx, fy, c->bounds.width, c->bounds.height, kfl};
+            if (kfl == FLOAT_LEFT) { if (fy + c->bounds.height > fc_l) fc_l = fy + c->bounds.height; }
+            else { if (fy + c->bounds.height > fc_r) fc_r = fy + c->bounds.height; }
+            fl_n++;
+            i++;
+            continue;
+        }
+        float lw = 0, rw = 0;
+        float_usage(fls, fl_n, y, 0.0f, &lw, &rw);
+        float avail = cw - lw - rw; if (avail < 0) avail = 0;
+        float bx = cx + lw;
+        if (node_display(k) == DISPLAY_INLINE) {
+            int j = i;
+            while (j < n->kid_n && node_display(n->kids[j]) != DISPLAY_BLOCK) j++;
+            y = layout_inline_run(box, n, i, j, cx + lw, y, avail, align);
+            i = j;
+            continue;
+        }
+        if (k->tag && !strcmp(k->tag, "li")) {
+            g_list_counter++;
+            g_li_ordinal = g_list_counter;
+            g_list_is_ol = n->tag && !strcmp(n->tag, "ol");
+        }
+        float cm_t = parse_prop_f(k, "margin-top");
+        float cm_b = parse_prop_f(k, "margin-bottom");
+        LayoutBox *c = build_box(k, bx, y, avail);
+        if (kp == POS_RELATIVE) {
+            float dx = parse_len(k, "left", c->bounds.width);
+            float dy = parse_len(k, "top", c->bounds.height);
+            if (!node_prop(k, "left")) dx = -parse_len(k, "right", c->bounds.width);
+            if (!node_prop(k, "top")) dy = -parse_len(k, "bottom", c->bounds.height);
+            shift_box(c, dx, dy);
+        }
+        push_child(box, c);
+        y += cm_t + c->bounds.height + cm_b;
+        i++;
+    }
+    if (h_prop <= 0)
+        box->bounds.height = box->child_count
+            ? (y - cy) + pt + pb + bt + bb
+            : pt + pb + bt + bb + 20.0f;
+    box->content = (LayoutRect){cx, cy, cw, box->bounds.height - bt - bb - pt - pb};
+    if (box->content.height < 0.0f) box->content.height = 0.0f;
+
+    for (int a = 0; a < pn; a++) {
+        push_child(box, poskids[a]);
+        place_positioned(poskids[a], box);
+    }
+    free(fls); free(poskids);
+}
+
 static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
     LayoutBox *box = calloc(1, sizeof(LayoutBox));
     box->node = n;
@@ -557,6 +733,17 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
         return box;
     }
 
+    if (is_flex(n)) {
+        layout_flex(box, n, child_x, child_y, child_w, h_prop,
+                    p_t, p_b, b_t, b_b);
+        return box;
+    }
+    if (is_grid(n)) {
+        layout_grid(box, n, child_x, child_y, child_w, h_prop,
+                    p_t, p_b, b_t, b_b);
+        return box;
+    }
+
     int all_inline = n->kid_n > 0;
     for (int i = 0; i < n->kid_n && all_inline; i++) {
         if (node_display(n->kids[i]) != DISPLAY_INLINE) all_inline = 0;
@@ -580,38 +767,13 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
         }
         box->bounds.width = mx - child_x;
         if (box->bounds.width < 0.0f) box->bounds.width = 0.0f;
+        box->content = (LayoutRect){child_x, child_y,
+            box->bounds.width, box->bounds.height - p_t - p_b - b_t - b_b};
+        if (box->content.height < 0.0f) box->content.height = 0.0f;
     } else {
         int align = node_align(n);
-        float y = child_y;
-        int i = 0;
-        if (n->tag && (!strcmp(n->tag, "ol") || !strcmp(n->tag, "ul")))
-            g_list_counter = 0;
-        while (i < n->kid_n) {
-            DisplayType d = node_display(n->kids[i]);
-            if (d == DISPLAY_NONE) { i++; continue; }
-            if (d == DISPLAY_INLINE) {
-                int j = i;
-                while (j < n->kid_n && node_display(n->kids[j]) != DISPLAY_BLOCK) j++;
-                y = layout_inline_run(box, n, i, j, child_x, y, child_w, align);
-                i = j;
-            } else {
-                if (n->kids[i]->tag && !strcmp(n->kids[i]->tag, "li")) {
-                    g_list_counter++;
-                    g_li_ordinal = g_list_counter;
-                    g_list_is_ol = n->tag && !strcmp(n->tag, "ol");
-                }
-                float cm_t = parse_prop_f(n->kids[i], "margin-top");
-                float cm_b = parse_prop_f(n->kids[i], "margin-bottom");
-                LayoutBox *c = build_box(n->kids[i], child_x, y, child_w);
-                push_child(box, c);
-                y += cm_t + c->bounds.height + cm_b;
-                i++;
-            }
-        }
-        if (h_prop <= 0)
-            box->bounds.height = box->child_count
-                ? (y - child_y) + p_t + p_b + b_t + b_b
-                : p_t + p_b + b_t + b_b + 20.0f;
+        layout_block_children(box, n, child_x, child_y, child_w, align,
+                              h_prop, p_t, p_b, b_t, b_b);
     }
 
     if (is_li && marker_w > 0) {
@@ -629,6 +791,200 @@ static LayoutBox *build_box(RenderNode *n, float x, float y, float avail_w) {
     return box;
 }
 
+static void layout_flex(LayoutBox *box, RenderNode *n, float cx, float cy,
+                        float cw, float h_prop, float pt, float pb,
+                        float bt, float bb) {
+    const char *jc = node_prop(n, "justify-content");
+    int justify = 0; // 0 start, 1 center, 2 end, 3 space-between
+    if (jc) {
+        if (!strcmp(jc, "center")) justify = 1;
+        else if (!strcmp(jc, "flex-end") || !strcmp(jc, "end")) justify = 2;
+        else if (!strcmp(jc, "space-between")) justify = 3;
+    }
+    const char *ai = node_prop(n, "align-items");
+    int ait = 0; // 0 stretch, 1 start, 2 center, 3 end
+    if (ai) {
+        if (!strcmp(ai, "flex-start") || !strcmp(ai, "start")) ait = 1;
+        else if (!strcmp(ai, "center")) ait = 2;
+        else if (!strcmp(ai, "flex-end") || !strcmp(ai, "end")) ait = 3;
+    }
+
+    typedef struct { RenderNode *k; float w, h, grow; } FlexItem;
+    FlexItem *items = NULL; int in = 0, icap = 0;
+    LayoutBox **poskids = NULL; int pn = 0, pcap = 0;
+    int i = 0;
+    while (i < n->kid_n) {
+        RenderNode *k = n->kids[i];
+        if (node_display(k) == DISPLAY_NONE) { i++; continue; }
+        if (node_position(k) == POS_ABSOLUTE || node_position(k) == POS_FIXED) {
+            LayoutBox *c = build_box(k, 0, 0, cw);
+            if (pn >= pcap) { pcap = pcap ? pcap * 2 : 4;
+                poskids = realloc(poskids, sizeof(LayoutBox *) * (size_t)pcap); }
+            poskids[pn++] = c;
+            i++;
+            continue;
+        }
+        float kw = parse_len(k, "width", cw);
+        float kh = parse_len(k, "height", 0);
+        LayoutBox *m = build_box(k, 0, 0, cw);
+        float nw = natural_width(m), nh = natural_height(m);
+        free_layout_box(m);
+        float w = kw > 0 ? kw : nw;
+        float h = kh > 0 ? kh : nh;
+        float gr = 0.0f;
+        const char *g = node_prop(k, "flex-grow");
+        if (g) gr = strtof(g, NULL);
+        if (in >= icap) { icap = icap ? icap * 2 : 4;
+            items = realloc(items, sizeof(FlexItem) * (size_t)icap); }
+        items[in] = (FlexItem){k, w, h, gr};
+        in++;
+        i++;
+    }
+    float total_w = 0.0f, grow_sum = 0.0f;
+    for (int a = 0; a < in; a++) {
+        total_w += items[a].w;
+        grow_sum += items[a].grow;
+    }
+    float freespace = cw - total_w;
+    float xoff = 0.0f;
+    if (justify == 1) xoff = freespace / 2.0f;
+    else if (justify == 2) xoff = freespace;
+    float gap = 0.0f;
+    if (justify == 3 && in > 1) gap = freespace / (float)(in - 1);
+    if (grow_sum > 0.0f && freespace > 0.0f) {
+        for (int a = 0; a < in; a++)
+            items[a].w += freespace * (items[a].grow / grow_sum);
+        freespace = 0.0f; gap = 0.0f;
+    }
+    float content_h = h_prop > 0.0f ? h_prop : 0.0f;
+    if (h_prop <= 0.0f)
+        for (int a = 0; a < in; a++)
+            if (items[a].h > content_h) content_h = items[a].h;
+    float cxpos = cx + xoff;
+    float row_bot = cy;
+    for (int a = 0; a < in; a++) {
+        float ih = items[a].h;
+        if (h_prop > 0.0f && ait == 0) ih = content_h; //stretch
+        LayoutBox *c = build_box(items[a].k, cxpos, cy, items[a].w);
+        c->bounds.height = ih;
+        float iy = cy;
+        if (ait == 1) iy = cy;
+        else if (ait == 2) iy = cy + (content_h - ih) / 2.0f;
+        else if (ait == 3) iy = cy + content_h - ih;
+        shift_box(c, 0, iy - c->bounds.y);
+        push_child(box, c);
+        float bot = c->bounds.y + c->bounds.height;
+        if (bot > row_bot) row_bot = bot;
+        cxpos += items[a].w + gap;
+    }
+    if (h_prop > 0.0f)
+        box->bounds.height = h_prop + pt + pb + bt + bb;
+    else
+        box->bounds.height = (row_bot - cy) + pt + pb + bt + bb;
+    box->content = (LayoutRect){cx, cy, cw, box->bounds.height - bt - bb - pt - pb};
+    if (box->content.height < 0.0f) box->content.height = 0.0f;
+
+    for (int a = 0; a < pn; a++) {
+        push_child(box, poskids[a]);
+        place_positioned(poskids[a], box);
+    }
+    free(items); free(poskids);
+}
+
+static void layout_grid(LayoutBox *box, RenderNode *n, float cx, float cy,
+                        float cw, float h_prop, float pt, float pb,
+                        float bt, float bb) {
+    const char *cols_s = node_prop(n, "grid-template-columns");
+    Track *cols = NULL; int cn = 0;
+    if (cols_s) cn = parse_track_list(cols_s, &cols);
+    if (cn == 0) { cols = calloc(1, sizeof(Track));
+        cols[0].v = 100; cols[0].is_pct = 1; cn = 1; }
+    float *colw = NULL; split_tracks(cw, cols, cn, &colw);
+    free(cols);
+
+    typedef struct { RenderNode *k; int row, col; float w, h; } GridItem;
+    GridItem *items = NULL; int in = 0, icap = 0;
+    float *row_h = NULL; int row_cap = 0, rows_n = 0;
+    int col = 0, cur_row = 0;
+    int i = 0;
+    while (i < n->kid_n) {
+        RenderNode *k = n->kids[i];
+        if (node_display(k) == DISPLAY_NONE) { i++; continue; }
+        if (node_position(k) == POS_ABSOLUTE || node_position(k) == POS_FIXED) {
+            i++;
+            continue;
+        }
+        if (col >= cn) { col = 0; cur_row++; }
+        if (cur_row >= row_cap) { int old_cap = row_cap; row_cap = cur_row + 1;
+            row_h = realloc(row_h, sizeof(float) * (size_t)row_cap);
+            for (int a = old_cap; a < row_cap; a++) row_h[a] = 0.0f; }
+        float cw_cell = colw[col];
+        LayoutBox *m = build_box(k, 0, 0, cw_cell);
+        float nh = natural_height(m), nw = natural_width(m);
+        free_layout_box(m);
+        float kw = parse_len(k, "width", cw_cell);
+        float w = kw > 0 ? kw : nw;
+        if (nh > row_h[cur_row]) row_h[cur_row] = nh;
+        if (in >= icap) { icap = icap ? icap * 2 : 4;
+            items = realloc(items, sizeof(GridItem) * (size_t)icap); }
+        items[in] = (GridItem){k, cur_row, col, w, nh};
+        in++;
+        col++;
+        i++;
+    }
+    rows_n = cur_row + 1;
+
+    float *row_y_arr = NULL;
+    if (rows_n > 0) {
+        row_y_arr = calloc(rows_n, sizeof(float));
+        float ry = cy;
+        for (int r = 0; r < rows_n; r++) { row_y_arr[r] = ry; ry += row_h[r]; }
+    }
+    float row_bot = cy;
+    for (int a = 0; a < in; a++) {
+        float ry = row_y_arr ? row_y_arr[items[a].row] : cy;
+        float cx_cell = cx;
+        for (int c = 0; c < items[a].col; c++) cx_cell += colw[c];
+        float cw_cell = colw[items[a].col];
+        LayoutBox *c = build_box(items[a].k, cx_cell, ry, cw_cell);
+        shift_box(c, cx_cell - c->bounds.x, ry - c->bounds.y);
+        c->bounds.height = row_h[items[a].row]; //stretch to row height
+        push_child(box, c);
+        float bot = ry + row_h[items[a].row];
+        if (bot > row_bot) row_bot = bot;
+    }
+    free(colw); free(row_h); free(row_y_arr); free(items);
+
+    if (h_prop > 0.0f)
+        box->bounds.height = h_prop + pt + pb + bt + bb;
+    else
+        box->bounds.height = (row_bot - cy) + pt + pb + bt + bb;
+    box->content = (LayoutRect){cx, cy, cw, box->bounds.height - bt - bb - pt - pb};
+    if (box->content.height < 0.0f) box->content.height = 0.0f;
+
+    //positioned grid kids (placed after content is known)
+    {
+        LayoutBox **p2 = NULL; int pn2 = 0, pcap2 = 0;
+        int i2 = 0;
+        while (i2 < n->kid_n) {
+            RenderNode *k = n->kids[i2];
+            if (node_display(k) == DISPLAY_NONE) { i2++; continue; }
+            if (node_position(k) == POS_ABSOLUTE || node_position(k) == POS_FIXED) {
+                LayoutBox *c = build_box(k, 0, 0, cw);
+                if (pn2 >= pcap2) { pcap2 = pcap2 ? pcap2 * 2 : 4;
+                    p2 = realloc(p2, sizeof(LayoutBox *) * (size_t)pcap2); }
+                p2[pn2++] = c;
+            }
+            i2++;
+        }
+        for (int a = 0; a < pn2; a++) {
+            push_child(box, p2[a]);
+            place_positioned(p2[a], box);
+        }
+        free(p2);
+    }
+}
+
 LayoutBox *layout_tree(FILE *fp, float viewport_w, float viewport_h) {
     RenderNode *root = parse_render_tree(fp);
     float scale_w = viewport_w * SCALE;
@@ -644,10 +1000,20 @@ LayoutBox *layout_tree(FILE *fp, float viewport_w, float viewport_h) {
     layout->bounds.y = 0;
     layout->bounds.width = scale_w;
     layout->bounds.height = scale_h;
+    layout->content = (LayoutRect){0, 0, scale_w, scale_h};
 
     float current_y = 0;
+    LayoutBox **poskids = NULL; int pn = 0, pcap = 0;
     for (int i = 0; i < root->kid_n; i++) {
         if (node_display(root->kids[i]) == DISPLAY_NONE) continue;
+        if (node_position(root->kids[i]) == POS_ABSOLUTE ||
+            node_position(root->kids[i]) == POS_FIXED) {
+            LayoutBox *c = build_box(root->kids[i], 0, 0, scale_w);
+            if (pn >= pcap) { pcap = pcap ? pcap * 2 : 4;
+                poskids = realloc(poskids, sizeof(LayoutBox *) * (size_t)pcap); }
+            poskids[pn++] = c;
+            continue;
+        }
         float cm_t = parse_prop_f(root->kids[i], "margin-top");
         float cm_b = parse_prop_f(root->kids[i], "margin-bottom");
         LayoutBox *child = build_box(root->kids[i], 0, current_y, scale_w);
@@ -655,6 +1021,11 @@ LayoutBox *layout_tree(FILE *fp, float viewport_w, float viewport_h) {
         layout->children[layout->child_count++] = child;
         current_y += cm_t + child->bounds.height + cm_b;
     }
+    for (int a = 0; a < pn; a++) {
+        push_child(layout, poskids[a]);
+        place_positioned(poskids[a], layout);
+    }
+    free(poskids);
 
     float content_h = current_y;
     if (content_h > MAX_PAGE_H) content_h = MAX_PAGE_H;

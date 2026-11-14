@@ -829,8 +829,18 @@ static void layout_flex(LayoutBox *box, RenderNode *n, float cx, float cy,
         float kh = parse_len(k, "height", 0);
         LayoutBox *m = build_box(k, 0, 0, cw);
         float nw = natural_width(m), nh = natural_height(m);
+        float m_l = parse_prop_f(k, "margin-left");
+        float m_r = parse_prop_f(k, "margin-right");
+        if (kw == 0.0f && node_display(k) != DISPLAY_INLINE) {
+            float content_nw = 0.0f;
+            for (size_t ci = 0; ci < m->child_count; ci++) {
+                float cnw = natural_width(m->children[ci]);
+                if (cnw > content_nw) content_nw = cnw;
+            }
+            if (content_nw > 0.0f) nw = content_nw;
+        }
         free_layout_box(m);
-        float w = kw > 0 ? kw : nw;
+        float w = kw > 0 ? kw : nw + m_l + m_r;
         float h = kh > 0 ? kh : nh;
         float gr = 0.0f;
         const char *g = node_prop(k, "flex-grow");

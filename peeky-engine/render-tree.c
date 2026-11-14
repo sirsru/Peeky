@@ -845,6 +845,14 @@ static void collect_ua(DomNode *e) {
     if (!strcmp(e->name, "hr")) {
         add_cand(0, -4, -4, "border-top", "1px solid");
     }
+    if (!strcmp(e->name, "nav") || !strcmp(e->name, "header") ||
+        !strcmp(e->name, "footer") || !strcmp(e->name, "section") ||
+        !strcmp(e->name, "article") || !strcmp(e->name, "main") ||
+        !strcmp(e->name, "aside") || !strcmp(e->name, "figure") ||
+        !strcmp(e->name, "figcaption") || !strcmp(e->name, "details") ||
+        !strcmp(e->name, "summary") || !strcmp(e->name, "dialog")) {
+        add_cand(0, -4, -4, "display", "block");
+    }
 }
 
 static void collect_presentational(DomNode *e) {

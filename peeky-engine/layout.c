@@ -312,6 +312,7 @@ static int node_align(RenderNode *n) {            //0 is left, 1 is center, 2 is
 }
 
 static void push_child(LayoutBox *box, LayoutBox *c) {
+    c->parent = box;
     box->children = realloc(box->children, sizeof(LayoutBox *) * (box->child_count + 1));
     box->children[box->child_count++] = c;
 }
@@ -947,7 +948,6 @@ static void layout_grid(LayoutBox *box, RenderNode *n, float cx, float cy,
         for (int c = 0; c < items[a].col; c++) cx_cell += colw[c];
         float cw_cell = colw[items[a].col];
         LayoutBox *c = build_box(items[a].k, cx_cell, ry, cw_cell);
-        shift_box(c, cx_cell - c->bounds.x, ry - c->bounds.y);
         c->bounds.height = row_h[items[a].row]; //stretch to row height
         push_child(box, c);
         float bot = ry + row_h[items[a].row];

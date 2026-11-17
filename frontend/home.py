@@ -119,6 +119,7 @@ class Tab:
         self.title = "new tab"
         self.html = b""
         self.base_dir = None
+        self.page = None
         self.message = ""
         self.size = None              # (cols, rows) the grid was rendered for
         self.palette = {}
@@ -377,11 +378,12 @@ def navigate(stdscr, tab, q):
     status("fetch", None)
     url, base_dir = resolve_query(q)
     try:
-        html = fetch.fetch_page(url, on_status=status)
+        load = fetch.fetch_page_async(url, on_status=status)
     except Exception as e:
         log_error(f"fetch_page failed for {url}", e)
         tab.mode, tab.title, tab.message, tab.size = "error", "error", str(e), None
         return
+    html = load.html
     if isinstance(html, str):
         html = html.encode("utf-8", "replace")
     fallback = (url.split("://", 1)[-1].split("/", 1)[0]
@@ -389,11 +391,12 @@ def navigate(stdscr, tab, q):
     tab.mode, tab.html, tab.base_dir, tab.size = "page", html, base_dir, None
     tab.title = page_title(html, fallback)
     tab.scroll = 0
+    tab.page = load
 
     rows = h - TAB_STRIP_H
     status("render", None)
     tab.palette, tab.grid = render_to_grid(tab.html, w, rows, tab.base_dir,
-                                           on_status=status)
+                                           on_status=status, page=load)
     tab.size = (w, rows)
 
 
@@ -407,7 +410,7 @@ def draw_page(scr, tab, w, h):
     if rows < 2 or w < 2:
         return
     if tab.size != (w, rows):
-        tab.palette, tab.grid = render_to_grid(tab.html, w, rows, tab.base_dir)
+        tab.palette, tab.grid = render_to_grid(tab.html, w, rows, tab.base_dir, page=tab.page)
         tab.size = (w, rows)
     total = len(tab.grid)
     max_s = max(0, total - rows)

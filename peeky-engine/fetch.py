@@ -5,6 +5,7 @@ import html as htmllib
 import base64
 import hashlib
 import pycurl
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, unquote_to_bytes
 
 FIREFOX_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
@@ -16,8 +17,6 @@ MAX_IMAGES = 60
 MAX_CSS_DEPTH = 5
 
 IMG_EXTS = {"png", "jpg", "jpeg", "gif", "bmp", "webp", "tga", "psd", "hdr", "pnm", "ppm", "pgm"}
-CT_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg", "image/gif": "gif",
-          "image/bmp": "bmp", "image/webp": "webp"}
 
 
 #Wowie do I love tab completion!11
@@ -131,10 +130,7 @@ def _is_svg(data, ctype="", url=""):
             or head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in data[:2048].lower()))
 
 
-def _ext_for(url, ctype):
-    ct = ctype.split(";")[0].strip().lower()
-    if ct in CT_EXT:
-        return CT_EXT[ct]
+def _ext_for(url):
     ext = os.path.splitext(url.split("?")[0].split("#")[0])[1].lstrip(".").lower()
     return ext if ext in IMG_EXTS else "img"
 
@@ -163,6 +159,7 @@ class _Page:
         self.base = base_url
         self.referer = referer
         self.images = {}          # absolute url / data-uri key -> local path or None
+        self.predicted = {} # key -> local cache path
         self.css_seen = set()
 
     def image(self, ref, base):
@@ -185,7 +182,18 @@ class _Page:
         self.images[key] = path
         return path
 
+    def _predict(self, key):
+        return _cache_path(key, _ext_for(key))
+
+    def src_for(self, ref, base):
+        ref = htmllib.unescape(ref.strip())
+        if not ref:
+            return None
+        key = ref if ref.startswith("data:") else urljoin(base, ref)
+        return self.predicted.get(key)
+
     def _load_image(self, key):
+        path = self._predict(key)
         if key.startswith("data:"):
             got = _decode_data_uri(key)
             if not got:
@@ -203,7 +211,6 @@ class _Page:
             return None
         if not data or _is_svg(data, ctype, url):
             return None               # stb_image can't decode SVG
-        path = _cache_path(key, _ext_for(url, ctype))
         if not os.path.exists(path):
             with open(path, "wb") as f:
                 f.write(data)
@@ -277,7 +284,7 @@ class _Page:
             if ref.startswith("data:font") or ref.startswith("data:application/font") \
                     or ref.startswith("data:image/svg"):
                 return m.group(0)
-            local = self.image(ref, base)
+            local = self.src_for(ref, base)
             return 'url("%s")' % local if local else m.group(0)
 
         return CSS_URL_RE.sub(do_url, text)
@@ -341,14 +348,45 @@ def _rewrite_css_urls(text, page, base):
         if ref.startswith("data:font") or ref.startswith("data:application/font") \
                 or ref.startswith("data:image/svg"):
             return m.group(0)
-        local = page.image(ref, base)
+        local = page.src_for(ref, base)
         return 'url("%s")' % local if local else m.group(0)
     return CSS_URL_RE.sub(do_url, text)
 
 
+class PageLoad:
+    def __init__(self, html, page=None, img_futs=(), executor=None, on_status=None, started=None):
+        self.html = html
+        self.page = page
+        self.img_futs = img_futs
+        self.executor = executor
+        self.on_status = on_status
+        self.started = started
+        self._waited = False
+
+    def wait_images(self):
+        if self._waited:
+            return
+        self._waited = True
+        if self.img_futs:
+            for f in as_completed(self.img_futs):
+                f.result()
+        if self.executor:
+            self.executor.shutdown(wait=True)
+        if self.on_status and self.started is not None:
+            self.on_status("imgs", time.monotonic() - self.started)
+
+    def finish(self):
+        self.wait_images()
+        return self.html
+
+
 def fetch_page(url, on_status=None):
+    return fetch_page_async(url, on_status).finish()
+
+
+def fetch_page_async(url, on_status=None):
     if url.startswith("file://"):
-        return _read_local(url)
+        return PageLoad(_read_local(url))
 
     def mark(name, started):
         if on_status:
@@ -417,15 +455,26 @@ def fetch_page(url, on_status=None):
 
     text = IMG_RE.sub(do_img_collect, text)
 
-    #fetch all external stylesheets concurrently ------------------------------------
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    #fetch css and html images concurrently -----------------------------------------
+    executor = ThreadPoolExecutor(max_workers=16)
+    img_futs = []
 
+    def queue_images(entries):
+        for tag, ref, ref_base in entries:
+            key = ref if ref.startswith("data:") else urljoin(ref_base, ref)
+            if key in page.predicted:          # already queued (html pass or dedup)
+                continue
+            if len(page.predicted) >= MAX_IMAGES:
+                break
+            page.predicted[key] = page._predict(key)
+            img_futs.append(executor.submit(page.image, ref, ref_base))
+
+    queue_images(img_entries)
+
+    css_futs = {executor.submit(page._fetch_css, u): u for u in css_links}
     css_texts = {}
-    if css_links:
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            futs = {ex.submit(page._fetch_css, u): u for u in css_links}
-            for f in as_completed(futs):
-                css_texts[futs[f]] = f.result()
+    for f in as_completed(css_futs):
+        css_texts[css_futs[f]] = f.result()
     mark("css", started)
 
     #find all image refs inside all CSS ---------------------------------------------
@@ -440,18 +489,8 @@ def fetch_page(url, on_status=None):
                 continue
             img_entries.append(("<css>", ref, u))
 
-    #cache time!11 ------------------------------------------------------------------
-    unique = {}
-    for tag, ref, ref_base in img_entries:
-        key = ref if ref.startswith("data:") else urljoin(ref_base, ref)
-        unique.setdefault(key, (ref, ref_base))
-    if unique:
-        with ThreadPoolExecutor(max_workers=16) as ex:
-            futs = {ex.submit(page.image, ref, rb): key
-                    for key, (ref, rb) in unique.items()}
-            for f in as_completed(futs):
-                f.result()
-    mark("imgs", started)
+    #images discovered inside css join the same pool --------------------------------
+    queue_images(img_entries)
 
     #rewrite HTML using cache ------------------------------------------------------
     def do_link(m):
@@ -495,11 +534,11 @@ def fetch_page(url, on_status=None):
             if first:
                 cands.append(first[0])
         for ref in cands:
-            local = page.image(ref, base)
+            local = page.src_for(ref, base)
             if local:
                 return _set_attr(tag, "src", local)
         return tag
 
     text = IMG_RE.sub(do_img, text)
     mark("html", started)
-    return text.encode("utf-8", "replace")
+    return PageLoad(text.encode("utf-8", "replace"), page, img_futs, executor, on_status, started)

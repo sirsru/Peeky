@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import curses
@@ -149,7 +150,7 @@ def _extract_css(html, base_dir=None):
 
 
 def run_pipeline(html_bytes, viewport_w=80, viewport_h=24, base_dir=None, term_cols=None, term_rows=None,
-                 on_status=None):
+                 on_status=None, page=None):
     t0 = time.monotonic()
 
     def tick(name):
@@ -160,21 +161,25 @@ def run_pipeline(html_bytes, viewport_w=80, viewport_h=24, base_dir=None, term_c
 
     try:
         on_status("tokenize", None)
-        #tokenizing
-        tok = _run_stage("tokenize", stdin_data=html_bytes)
-        tick("tokenize")
-        if not tok:
-            return {}, 0, 0, []
-        on_status("tree", None)
-        #tree
-        dom = _run_stage("tree", stdin_data=tok)
-        tick("tree")
-        if not dom:
-            return {}, 0, 0, []
-        #cssom
-        css_raw = _extract_css(html_bytes, base_dir)
-        on_status("cssom", None)
-        cssom = _run_stage("cssom", stdin_data=css_raw) if css_raw.strip() else b"#stylesheet\n"
+        #build cssom alongside tokenizing and tree building
+        def cssom_stage():
+            css_raw = _extract_css(html_bytes, base_dir)
+            return _run_stage("cssom", stdin_data=css_raw) if css_raw.strip() else b"#stylesheet\n"
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            css_fut = ex.submit(cssom_stage)
+            on_status("cssom", None)
+            #tokenizing
+            tok = _run_stage("tokenize", stdin_data=html_bytes)
+            tick("tokenize")
+            if not tok:
+                return {}, 0, 0, []
+            on_status("tree", None)
+            #tree
+            dom = _run_stage("tree", stdin_data=tok)
+            tick("tree")
+            if not dom:
+                return {}, 0, 0, []
+            cssom = css_fut.result()
         tick("cssom")
         if not cssom:
             return {}, 0, 0, []
@@ -205,6 +210,9 @@ def run_pipeline(html_bytes, viewport_w=80, viewport_h=24, base_dir=None, term_c
         tick("layout")
         if not layout:
             return {}, 0, 0, []
+        #wait for downloads
+        if page is not None:
+            page.wait_images()
         #paint
         on_status("paint", None)
         paint_args = []
@@ -220,9 +228,9 @@ def run_pipeline(html_bytes, viewport_w=80, viewport_h=24, base_dir=None, term_c
         return {}, 0, 0, []
 
 
-def render_to_grid(html_bytes, cols, rows, base_dir=None, on_status=None):
+def render_to_grid(html_bytes, cols, rows, base_dir=None, on_status=None, page=None):
     palette, _c, _r, grid = run_pipeline(html_bytes, cols * 2, rows * 2,
-                                         base_dir, cols, rows, on_status)
+                                         base_dir, cols, rows, on_status, page)
     return palette, grid
 
 

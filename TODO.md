@@ -1,93 +1,159 @@
-## HTML
-
 - [x] tokenizer
-
 - [x] tree builder
-
 - [x] namespaces
-
 - [x] template element
-
 - [x] frameset / frame rendering
-
+- [ ] named character entities. (`&emsp;`and such)
+  - [ ] generate the HTML5 named entity table
+  - [ ] handle entities without a trailing semicolon
+  - [ ] numeric references
+- [ ] unknown elements rendered as inline boxes
+  - [ ] unknown elements not dropped by tree builder
+  - [ ] default styling inline, inherit color
 - [ ] iframe content loading
-
+  - [ ] nested document
+  - [ ] nested browsing context
+  - [ ] sandboxing
 - [ ] script execution
-
+  - [ ] parser-inserted                `<script>` vs `defer` vs `async`
+  - [ ] DOM API surface                `getElementById`, `querySelector`, `querySelectorAll`
+  - [ ] DOM mutation                   `innerText`, `textContent`
+  - [ ] events                         `addEventListener`
+  - [ ] timers                         `setInterval`, `setTimeout`
+  - [ ] isolate errors
+  - [ ] `type="module"`
+- [ ] image selection                  `<picture>`, `<source srcset>` 
+  - [ ] `<source>` candidates in order
+  - [ ] parse `srcset` 
+- [ ] handle `<noscript>`
+  - [ ] JS disabled
+  - [ ] JS enabled
 - [ ] audio / video / canvas
-
+  - [ ] `<canvas>`
 - [ ] form submission
-
-- [ ] details / dialog interactivity
-
-
+  - [ ] collect form data
+  - [ ] `GET`
+  - [ ] `enctype=multipart/form-data`
 
 ## CSS
 
 - [x] cssom tokenizer
-
 - [x] selectors
-
 - [x] cascade
-
 - [x] shorthands
-
 - [x] presentational HTML attributes, inline style=""
-
 - [x] props
-
 - [x] pseudo :first-child, :empty, :root
-
-- [ ] @media / @font-face / @keyframes / @page
-
+- [ ] `!important`
+  - [ ] `!important` in declarations
+  - [ ] cascade order
+- [ ] CSS keywords
+  - [ ] `initial`
+  - [ ] `inherit`
+  - [ ] `unset`
+  - [ ] keywords valid in shorthand expansion
+- [ ] CSS custom properties resolution and inheritance
+  - [ ] custom properties inherit down the tree
+  - [ ] `var(--name)` substitution with fallback `var(--x, default)`
+  - [ ] chained vars
+  - [ ] case-sensitivity
+- [ ] `@media` queries
+  - [ ] parse `@media`
+  - [ ] evaluate media features        `width`, `min-width`, `max-width`, `prefers-color-scheme`
+- [ ] `@keyframes`, `@page`
+  - [ ] parse `@keyframes`
+  - [ ] interpolate properties
+- [ ] `rel=preload as=style onload=...`
+  - [ ] script execution flips, triggers stylesheet fetch/apply
+  - [ ] `onload`
+- [ ] :hover, :active, :focus, :link, :visited, :target states
+  - [ ] mouse-move
+  - [ ] mousedown/up
+  - [ ] click into focusable
+  - [ ] restyle subtrees
 - [ ] border-style, border-radius, outline, opacity
-
-- [ ] text-decoration, text-transform, line-height, letter-spacing
-
-- [x] float, position, flex, grid
-
-- [ ] :hover / :active / :focus / :link / :visited / :target states
-
-
+  - [ ] border-style
+  - [ ] border-radius
+  - [ ] rounded corners
+  - [ ] outline
+  - [ ] opacity
+- [ ] background-image
+  - [ ] parse `linear-gradient(angle, stops...)` and `to bottom right`
+  - [ ] render gradient
+  - [ ] multiple stacked backgrounds
+  - [ ] 8-digit hex
+- [ ] `gap`, row-gap, column-gap in flexbox
+  - [ ] gap space counted
+  - [ ] row-gap between wrapped flex lines
+  - [ ] gap must not leak
+- [ ] `display: contents`
+  - [ ] element generates no box
+  - [ ] style inheritance passes through elements
+  - [ ] works with flex/grid parents
+- [ ] grid track syntax
+  - [ ] `repeat(N, tracks)` expansion
+  - [ ] `auto-fit` / `auto-fill` 
+  - [ ] `minmax(min, max)` 
+  - [ ] fr distributes leftover space equally
+- [ ] negative margins
+  - [ ] block layout
+  - [ ] inline/flex
+  - [ ] `margin: -16px`
+- [ ] `overflow-x: auto`
+  - [ ] measure content overflow
+  - [ ] scrolling doesnt scroll
+  - [ ] `overflow: hidden` 
 
 ## Layout
 
 - [x] block stack, inline wrap and align, br
-
 - [x] tables: tr/td/th, fixed and auto cell widths
-
 - [x] replaced boxes: img, input, textarea, select
-
-- [ ] rowspan / colspan
-
+- [x] float, position, flex, grid (basic model)
+- [ ] flex sizing algorithm details
+  - [ ] `flex-basis: auto`
+  - [ ] grow and shrink respects factors and basis
+  - [ ] items clamp min-content size by default
+  - [ ] `flex-wrap: wrap`
+- [ ] basic width measurement
+  - [ ] max-content width, min-content width
+  - [ ] inline text
+  - [ ] nested
+  - [ ] basic width of grid
+  - [ ] tables and images contribute their own size
+- [ ] rowspan, colspan
+  - [ ] `colspan`
+  - [ ] `rowspan`
 - [ ] margin collapse
-
-- [x] float, position, flex, grid
-
-
+  - [ ] adjacent siblings
+  - [ ] negative margins combine
+  - [ ] no collapsing through certain things
 
 ## Paint
 
 - [x] colors
-
 - [x] background fill, solid uniform borders, text glyphs, dithered images
-
-- [ ] border-style, css background-image
-
-- [ ] text-decoration underline, shadows
-
-
+- [ ] border radius
+  - [ ] clip images to rounded rect
+  - [ ] scaled radii when corners overlap
+- [ ] border-style, css background-image, gradients
+  - [ ] paint order
+  - [ ] url() background images
+  - [ ] gradient painting
+- [ ] text-decoration underline
+  - [ ] underline position from font underline metrics (not a fixed offset)
+  - [ ] decoration continues
+- [ ] WebP image decode
+  - [ ] lossy WebP
+  - [ ] downscale images
+  - [ ] animated only shows first frame
 
 ## Network
 
 - [x] http/https
-
 - [x] file:// and data: URIs
-
 - [x] external stylesheets, @import, inline <style>
-
 - [x] image cache (png/jpg/etc, max 60, 8MB cap)
-
 - [x] persistent cookies
-
 - [ ] auth
+  - [ ] HTTP Basic

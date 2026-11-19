@@ -52,11 +52,11 @@
   - [ ] `inherit`
   - [ ] `unset`
   - [ ] keywords valid in shorthand expansion
-- [ ] CSS custom properties resolution and inheritance
-  - [ ] custom properties inherit down the tree
-  - [ ] `var(--name)` substitution with fallback `var(--x, default)`
-  - [ ] chained vars
-  - [ ] case-sensitivity
+- [x] CSS custom properties resolution and inheritance
+  - [x] custom properties inherit down the tree
+  - [x] `var(--name)` substitution with fallback `var(--x, default)`
+  - [x] chained vars
+  - [x] case-sensitivity
 - [ ] `@media` queries
   - [ ] parse `@media`
   - [ ] evaluate media features        `width`, `min-width`, `max-width`, `prefers-color-scheme`

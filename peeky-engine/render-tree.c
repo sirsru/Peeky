@@ -1018,6 +1018,105 @@ static void map_free(Map *m) {
     free(m->p);
 }
 
+static int is_inherited(const char *prop);
+
+static char *substitute_vars(const char *src, Map *cm, int depth) {
+    if (depth > 8)
+        return NULL; //I aint doing more than that vro
+    size_t cap = strlen(src) * 2 + 16;
+    char *out = xcalloc(1, cap);
+    size_t w = 0;
+    const char *p = src;
+    while (*p) {
+        if (!strncmp(p, "var(", 4)) {
+            const char *start = p + 4;
+            int d = 1;
+            const char *q = start;
+            while (*q && d > 0) {
+                if (*q == '(') d++;
+                else if (*q == ')') d--;
+                q++;
+            }
+            if (d != 0) {
+                if (w + 4 >= cap) { cap *= 2; out = xrealloc(out, cap); }
+                memcpy(out + w, "var(", 4); w += 4;
+                p += 4;
+                continue;
+            }
+            size_t inner_len = (size_t)((q - 1) - start);
+            char *inner = xstrndup(start, inner_len);
+            char *name = inner;
+            char *fallback = NULL;
+            int pd = 0;
+            for (char *c = inner; *c; c++) {
+                if (*c == '(' || *c == '[') pd++;
+                else if (*c == ')' || *c == ']') pd--;
+                else if (*c == ',' && pd == 0) {
+                    *c = '\0';
+                    fallback = c + 1;
+                    break;
+                }
+            }
+            while (*name == ' ' || *name == '\t') name++;
+            char *ne = name + strlen(name);
+            while (ne > name && (ne[-1] == ' ' || ne[-1] == '\t' || ne[-1] == ','))
+                *--ne = '\0';
+            if (fallback)
+                while (*fallback == ' ' || *fallback == '\t') fallback++;
+            const char *repl = NULL;
+            if (name[0] == '-' && name[1] == '-')
+                repl = map_get(cm, name);
+            char *final_repl = NULL;
+            int ok = 0;
+            if (repl) {
+                final_repl = substitute_vars(repl, cm, depth + 1);
+                ok = final_repl != NULL;
+            } else if (fallback && *fallback) {
+                final_repl = substitute_vars(fallback, cm, depth + 1);
+                ok = final_repl != NULL;
+            }
+            free(inner);
+            if (!ok) { free(out); return NULL; }
+            size_t rl = strlen(final_repl);
+            if (w + rl + 1 >= cap) { cap = (w + rl + 1) * 2; out = xrealloc(out, cap); }
+            memcpy(out + w, final_repl, rl); w += rl;
+            free(final_repl);
+            p = q;
+        } else {
+            if (w + 1 >= cap) { cap *= 2; out = xrealloc(out, cap); }
+            out[w++] = *p++;
+        }
+    }
+    out[w] = '\0';
+    return out;
+}
+
+static void substitute_map(Map *out, Map *parent) {
+    Map result = {0};
+    for (int i = 0; i < out->n; i++) {
+        const char *prop = out->p[i].prop;
+        const char *val = out->p[i].val;
+        if (prop[0] == '-' && prop[1] == '-') {
+            map_set(&result, prop, val); //custom props stay raw
+            continue;
+        }
+        char *sub = substitute_vars(val, out, 0);
+        if (!sub) {
+            //your shi is cooked vro, time to go back to old values vro
+            if (is_inherited(prop) && parent) {
+                const char *inh = map_get(parent, prop);
+                if (inh)
+                    map_set(&result, prop, inh);
+            }
+            continue;
+        }
+        map_set(&result, prop, sub);
+        free(sub);
+    }
+    map_free(out);
+    *out = result;
+}
+
 static const char *INHERITED[] = {
     "color",          "direction",     "visibility",    "white-space",
     "text-align",     "text-indent",   "text-transform", "letter-spacing",
@@ -1026,6 +1125,8 @@ static const char *INHERITED[] = {
     "quotes",         "text-size-adjust", NULL};
 
 static int is_inherited(const char *prop) {
+    if (prop[0] == '-' && prop[1] == '-')
+        return 1; //custom properties inherit down the tree
     for (int i = 0; INHERITED[i]; i++)
         if (!strcmp(INHERITED[i], prop))
             return 1;
@@ -1070,6 +1171,7 @@ static void compute_style(DomNode *e, Map *parent, Map *out) {
         free(cands[i].prop);
         free(cands[i].val);
     }
+    substitute_map(out, parent);
 }
 
 //render tree!!!1!!

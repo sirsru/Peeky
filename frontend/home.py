@@ -7,12 +7,11 @@ VERBOSE = "--verbose" in sys.argv
 
 import re
 import curses
+import locale
 import random
 import termios
 import time
-import traceback
 import textwrap
-from datetime import datetime
 from urllib.parse import quote
 
 import fetch
@@ -64,8 +63,9 @@ EYE_CLOSED = ["     ",
               "     "]
 
 HINT = "type to search | ctrl+q to quit"
-SHORTCUT_1 = "ctrl+t new tab | ctrl+w close tab"
-SHORTCUT_2 = "ctrl+n/p next/prev tab | ctrl+l address bar"
+SHORTCUTS = "ctrl+t/w tab | ctrl+n/p switch | ctrl+l url"
+FOOTER_HOME = "↑↓/j/k select | enter open | type to search | ctrl+q quit"
+FOOTER_ERROR = "esc: home | ctrl+q: quit"
 
 BLINK_SHUT = 0.14
 BLINK_GAP = (2.6, 5.2)
@@ -86,16 +86,30 @@ TAB_MAX_W = 26
 TAB_PLUS_W = 3
 
 TAB_HITS = []   # (x0, x1, kind, index), half-open, rebuilt every draw
+HOME_HITS = []  # (x0, x1, y, kind, sel-index), rebuilt every draw
 
 WHEEL_UP = curses.BUTTON4_PRESSED | curses.BUTTON4_CLICKED
 WHEEL_DOWN = (getattr(curses, "BUTTON5_PRESSED", 0) |
               getattr(curses, "BUTTON5_CLICKED", 0))
 LEFT_CLICK = curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
 
+SPINNER = "|/-\\"
+
+
+def page_rows(h):
+    return h - TAB_STRIP_H - 1
+
 
 def tab_hit(mx):
     for x0, x1, kind, i in TAB_HITS:
         if x0 <= mx < x1:
+            return kind, i
+    return None, -1
+
+
+def home_hit(mx, my):
+    for x0, x1, y, kind, i in HOME_HITS:
+        if y == my and x0 <= mx < x1:
             return kind, i
     return None, -1
 
@@ -117,6 +131,7 @@ class Tab:
     def __init__(self):
         self.mode = "home"            # "home" | "page" | "error"
         self.title = "new tab"
+        self.url = ""
         self.html = b""
         self.base_dir = None
         self.page = None
@@ -155,6 +170,20 @@ def put(scr, y, x, s, a):
             pass
 
 
+def draw_panel(scr, px, py, panel_w, panel_h):
+    b = mut()
+    for dy in range(panel_h):
+        put(scr, py + dy, px, " " * panel_w, attr(P_PANEL))
+    scr.hline(py, px, curses.ACS_HLINE | b, panel_w)
+    scr.hline(py + panel_h - 1, px, curses.ACS_HLINE | b, panel_w)
+    scr.vline(py, px, curses.ACS_VLINE | b, panel_h)
+    scr.vline(py, px + panel_w - 1, curses.ACS_VLINE | b, panel_h)
+    scr.addch(py, px, curses.ACS_ULCORNER | b)
+    scr.addch(py, px + panel_w - 1, curses.ACS_URCORNER | b)
+    scr.addch(py + panel_h - 1, px, curses.ACS_LLCORNER | b)
+    scr.addch(py + panel_h - 1, px + panel_w - 1, curses.ACS_LRCORNER | b)
+
+
 def draw_tab_strip(scr, tabs, active, w):
     act = attr(P_TAB_ACTIVE, curses.A_BOLD)
     ina = attr(P_TAB_INACTIVE, curses.A_DIM)
@@ -174,7 +203,6 @@ def draw_tab_strip(scr, tabs, active, w):
 
     put(scr, 0, 0, "‹" if start > 0 else " ", rule)
     x = 1
-    close_positions = {}
     for i in range(start, end):
         is_act = i == active
         inner = tab_w - 1
@@ -189,7 +217,6 @@ def draw_tab_strip(scr, tabs, active, w):
         put(scr, 0, x, text, act if is_act else ina)
         if is_act:
             put(scr, 1, x, "━" * inner, act)
-            close_positions[i] = x + len(text) - 2
         elif i + 1 != active and i + 1 < end:
             put(scr, 0, x + inner, "│", rule)
         x += tab_w
@@ -197,7 +224,6 @@ def draw_tab_strip(scr, tabs, active, w):
     put(scr, 0, x + 1, " + ", attr(P_ACCENT))
     hits.append((x, x + 4, "new", -1))
     TAB_HITS[:] = hits
-    return close_positions, x + 1
 
 
 def draw_banner(scr, y, x, eyes_open):
@@ -263,7 +289,7 @@ def draw_screen(scr, eyes_open, sel=0):
     h, w = scr.getmaxyx()
     use_banner = w >= BANNER_W + 2 and h >= BANNER_H + 7
     if use_banner:
-        ly = max((h - (BANNER_H + 2 + 3 + 2)) // 2, 0)
+        ly = max((h - (BANNER_H + 2 + 3 + 2 + 3)) // 2, 0)
         draw_banner(scr, ly, (w - BANNER_W) // 2, eyes_open)
         by = ly + BANNER_H + 2
     else:
@@ -274,31 +300,47 @@ def draw_screen(scr, eyes_open, sel=0):
     box_w = max(min(w - 4, 58), 10)
     bx = max((w - box_w) // 2, 0)
     can_box = by + 2 <= h - 2 and box_w >= 8
-    highlight_box = can_box and sel == 0
+    hits = []
     if can_box:
+        highlight_box = sel == 0
         draw_box(scr, bx, by, box_w, highlight=highlight_box)
         hint_a = mut() if not highlight_box else attr(P_ACCENT, curses.A_BOLD)
         put(scr, by + 4, bx + (box_w - len(HINT)) // 2, HINT, hint_a)
-        if can_box and h > by + 6:
-            s1 = SHORTCUT_1[:max(box_w - 4, 0)]
-            s2 = SHORTCUT_2[:max(box_w - 4, 0)]
-            cx = (box_w - 1) // 2
-            p1 = s1.find("|")
-            p2 = s2.find("|")
-            x1 = bx + cx - p1
-            x2 = bx + cx - p2
-            x1 = max(bx + 1, min(x1, bx + box_w - len(s1) - 1))
-            x2 = max(bx + 1, min(x2, bx + box_w - len(s2) - 1))
-            put(scr, by + 5, x1, s1, hint_a)
-            put(scr, by + 6, x2, s2, hint_a)
+        hits.append((bx, bx + box_w, by, "search", 0))
 
-    if h >= 2 and w >= 24:
-        github_attr = attr(P_ACCENT, curses.A_BOLD) if sel == 1 else mut()
-        settings_attr = attr(P_ACCENT, curses.A_BOLD) if sel == 2 else mut()
-        put(scr, h - 1, 2, "github", github_attr)
-        put(scr, h - 1, max(w - 10, 12), "settings", settings_attr)
+        for idx, label in ((1, "github"), (2, "settings")):
+            y = by + 4 + idx
+            if y >= h - 1:
+                break
+            text = f"› {label}" if sel == idx else f"  {label}"
+            a = attr(P_ACCENT, curses.A_BOLD) if sel == idx else mut()
+            x = bx + (box_w - len(text)) // 2
+            put(scr, y, x, text, a)
+            hits.append((x, x + len(text), y, "menu", idx))
+
+        if h > by + 8:
+            put(scr, by + 7, bx + (box_w - len(SHORTCUTS)) // 2, SHORTCUTS, mut())
+    HOME_HITS[:] = hits
     scr.refresh()
     return can_box, bx, by, box_w
+
+
+def draw_footer(scr, tab, w, h):
+    if h < 1:
+        return
+    if tab.mode == "page":
+        rows = page_rows(h)
+        max_s = max(0, len(tab.grid) - rows)
+        pct = 100 if max_s == 0 else int(min(100.0, tab.scroll / max_s * 100))
+        right = f"{pct}%  esc: home  r: reload  ctrl+q: quit"
+        room = max(w - len(right) - 6, 0)
+        left = (tab.title or tab.url or "")[:room]
+        put(scr, h - 1, 2, left, mut())
+        put(scr, h - 1, max(w - len(right) - 2, len(left) + 3), right, mut())
+    elif tab.mode == "error":
+        put(scr, h - 1, 2, FOOTER_ERROR, mut())
+    else:
+        put(scr, h - 1, max((w - len(FOOTER_HOME)) // 2, 0), FOOTER_HOME, mut())
 
 
 def read_input(scr, bx, by, box_w, first="", highlight=False):
@@ -361,14 +403,16 @@ def page_title(html, fallback):
 
 def navigate(stdscr, tab, q):
     h, w = stdscr.getmaxyx()
-    put(stdscr, h - 1, 0, " " * w, attr(P_PANEL))
+    stdscr.clear()
+    stdscr.refresh()
 
-    state = {"name": "", "t0": 0.0}
+    state = {"name": "", "t0": 0.0, "spin": 0}
 
     def status(name, elapsed=None):
         if elapsed is None:
             state["name"], state["t0"] = name, time.monotonic()
-            text = name + "…"
+            state["spin"] = (state["spin"] + 1) % len(SPINNER)
+            text = f"{SPINNER[state['spin']]} {name}…"
         else:
             text = f"{name} {elapsed:.1f}s"
         put(stdscr, h - 1, 0, " " * w, attr(P_PANEL))
@@ -378,7 +422,11 @@ def navigate(stdscr, tab, q):
     status("fetch", None)
     url, base_dir = resolve_query(q)
     try:
-        load = fetch.fetch_page_async(url, on_status=status)
+        load = fetch.fetch_page_async(
+            url, on_status=status,
+            cache_size=settings.SETTINGS["cache_size"],
+            workers=settings.SETTINGS["workers"],
+        )
     except Exception as e:
         log_error(f"fetch_page failed for {url}", e)
         tab.mode, tab.title, tab.message, tab.size = "error", "error", str(e), None
@@ -389,11 +437,12 @@ def navigate(stdscr, tab, q):
     fallback = (url.split("://", 1)[-1].split("/", 1)[0]
                 if url.startswith("http") else os.path.basename(url))
     tab.mode, tab.html, tab.base_dir, tab.size = "page", html, base_dir, None
+    tab.url = url
     tab.title = page_title(html, fallback)
     tab.scroll = 0
     tab.page = load
 
-    rows = h - TAB_STRIP_H
+    rows = page_rows(h)
     status("render", None)
     tab.palette, tab.grid = render_to_grid(tab.html, w, rows, tab.base_dir,
                                            on_status=status, page=load)
@@ -401,11 +450,18 @@ def navigate(stdscr, tab, q):
 
 
 def draw_page(scr, tab, w, h):
-    top, rows = TAB_STRIP_H, h - TAB_STRIP_H
+    top, rows = TAB_STRIP_H, page_rows(h)
     if tab.mode == "error":
-        put(scr, top + 1, 2, "couldn't load this page", attr(P_ACCENT, curses.A_BOLD))
-        for i, line in enumerate(textwrap.wrap(tab.message, max(w - 4, 10))[:max(rows - 4, 0)]):
-            put(scr, top + 3 + i, 2, line, mut())
+        msg_lines = textwrap.wrap(tab.message, max(w - 8, 10))[:max(rows - 6, 1)]
+        panel_w = min(max(max((len(l) for l in msg_lines), default=0) + 8, 30), w - 4)
+        panel_h = min(len(msg_lines) + 6, max(h - 2, 5))
+        px = max((w - panel_w) // 2, 0)
+        py = max((h - panel_h) // 2, 0)
+        draw_panel(scr, px, py, panel_w, panel_h)
+        put(scr, py + 1, px + 2, "couldn't load this page", attr(P_ACCENT, curses.A_BOLD))
+        for i, line in enumerate(msg_lines):
+            put(scr, py + 3 + i, px + 2, line, mut())
+        scr.refresh()
         return
     if rows < 2 or w < 2:
         return
@@ -429,6 +485,8 @@ def draw_page(scr, tab, w, h):
 def prompt_line(scr, label="go: "):
     h, w = scr.getmaxyx()
     scr.timeout(-1)
+    scr.clear()
+    scr.refresh()
     buf = ""
     while True:
         put(scr, h - 1, 0, " " * w, attr(P_PANEL))
@@ -463,22 +521,12 @@ def draw_home(stdscr):
     next_blink = time.monotonic() + random.uniform(*BLINK_GAP)
     shut_until = 0.0
     sel = 0
-    prev_mode = None
 
     while True:
         try:
             tab = tabs[active]
             h, w = stdscr.getmaxyx()
             can_box, bx, by, box_w = False, 0, 0, 0
-
-            if tab.mode == "home" and prev_mode == "page":
-                # previous page was painted straight to the terminal by
-                # draw_grid (bypasses curses); clear the physical screen so
-                # stale page content cannot show through the home screen
-                stdscr.clear()
-            else:
-                stdscr.erase()
-            prev_mode = tab.mode
 
             if tab.mode == "home":
                 stdscr.timeout(80)
@@ -492,14 +540,13 @@ def draw_home(stdscr):
             else:
                 stdscr.timeout(-1)
 
-            stdscr.erase()
-            close_positions, plus_x = draw_tab_strip(stdscr, tabs, active, w)
+            stdscr.clear()
+            draw_tab_strip(stdscr, tabs, active, w)
+            draw_footer(stdscr, tab, w, h)
             if tab.mode == "home":
                 can_box, bx, by, box_w = draw_screen(stdscr, eyes_open, sel)
             else:
                 draw_page(stdscr, tab, w, h)
-            if tab.mode != "page":
-                stdscr.refresh()
 
             key = stdscr.getch()
             if key == -1 or key == curses.KEY_RESIZE:
@@ -520,8 +567,21 @@ def draw_home(stdscr):
                             active = close_tab(tabs, i)
                         elif kind == "tab":
                             active = i
+                elif bstate & LEFT_CLICK and tab.mode == "home":
+                    kind, i = home_hit(mx, my)
+                    if kind == "search" and can_box:
+                        sel = 0
+                        q = read_input(stdscr, bx, by, box_w, highlight=True)
+                        if q:
+                            navigate(stdscr, tab, q)
+                    elif kind == "menu":
+                        sel = i
+                        if i == 1:
+                            navigate(stdscr, tab, "github.com")
+                        elif i == 2:
+                            settings.draw_settings(stdscr)
                 elif tab.mode == "page":
-                    view = h - TAB_STRIP_H
+                    view = page_rows(h)
                     max_s = max(0, len(tab.grid) - view)
                     instant = settings.SETTINGS.get("scrolling") == "instant"
                     jump = view if instant else 3
@@ -538,23 +598,39 @@ def draw_home(stdscr):
                 else:
                     tabs.pop(active)
                     active = min(active, len(tabs) - 1)
-            elif key == 14:                          # ctrl+n: next tab
+            elif key == 16:                          # ctrl+p: next tab
                 active = (active + 1) % len(tabs)
-            elif key == 16:                          # ctrl+p: previous tab
+            elif key == 14:                          # ctrl+n: previous tab
                 active = (active - 1) % len(tabs)
             elif key == 12:                          # ctrl+l: address bar
                 if tab.mode == "home":
                     sel = 0
+                    if can_box:
+                        q = read_input(stdscr, bx, by, box_w, highlight=True)
+                        if q:
+                            navigate(stdscr, tab, q)
                 else:
                     q = prompt_line(stdscr)
                     if q:
                         navigate(stdscr, tab, q)
             elif tab.mode == "page":
-                scroll_key(tab, key, h - TAB_STRIP_H,
-                           settings.SETTINGS.get("scrolling") == "instant")
+                view = page_rows(h)
+                if key == 27:                        # esc: back to home
+                    tab.mode = "home"
+                elif key == ord("r") and tab.url:    # reload
+                    navigate(stdscr, tab, tab.url)
+                elif ord("1") <= key <= ord("9"):    # jump to tab n
+                    idx = key - ord("1")
+                    if idx < len(tabs):
+                        active = idx
+                else:
+                    scroll_key(tab, key, view,
+                               settings.SETTINGS.get("scrolling") == "instant")
             elif tab.mode == "home":
-                if key in (9, 353):
-                    sel = (sel + (-1 if key == 353 else 1)) % len(SELECTABLES)
+                if key in (9, 353, curses.KEY_DOWN, curses.KEY_UP,
+                           ord("j"), ord("k")):
+                    step = -1 if key in (353, curses.KEY_UP, ord("k")) else 1
+                    sel = (sel + step) % len(SELECTABLES)
                 elif key in (10, 13, curses.KEY_ENTER):
                     if sel == 1:
                         navigate(stdscr, tab, "github.com")
@@ -564,24 +640,34 @@ def draw_home(stdscr):
                         q = read_input(stdscr, bx, by, box_w, highlight=True)
                         if q:
                             navigate(stdscr, tab, q)
-                elif sel == 0 and can_box and 32 <= key < 127:
-                    q = read_input(stdscr, bx, by, box_w, highlight=True, first=chr(key))
-                    if q:
-                        navigate(stdscr, tab, q)
+                elif 32 <= key < 127:
+                    sel = 0
+                    if can_box:
+                        q = read_input(stdscr, bx, by, box_w, highlight=True, first=chr(key))
+                        if q:
+                            navigate(stdscr, tab, q)
             # any other key on a page tab is ignored: the page stays put
         except Exception as e:
             log_error("draw_home loop exception", e)
-            t = tabs[active]
-            t.mode, t.title, t.message = "error", "error", str(e)
+            try:
+                t = tabs[active]
+                t.mode, t.title, t.message = "error", "error", str(e)
+            except Exception:
+                pass
 
 
 def main():
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
+    os.environ["ESCDELAY"] = "25"
     fd = sys.stdin.fileno()
     old_attrs = None
     try:
         old_attrs = termios.tcgetattr(fd)
         new_attrs = termios.tcgetattr(fd)
-        new_attrs[3] &= ~(termios.IXON | termios.IXOFF)
+        new_attrs[0] &= ~(termios.IXON | termios.IXOFF)
         termios.tcsetattr(fd, termios.TCSANOW, new_attrs)
     except (termios.error, OSError):
         pass
@@ -600,4 +686,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main() 

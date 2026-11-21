@@ -155,9 +155,10 @@ def _decode_data_uri(uri):
 class _Page:
     """Per-navigation state: base URL, cache bookkeeping, resource counters."""
 
-    def __init__(self, base_url, referer):
+    def __init__(self, base_url, referer, cache_size=MAX_RESOURCE):
         self.base = base_url
         self.referer = referer
+        self.cache_size = cache_size
         self.images = {}          # absolute url / data-uri key -> local path or None
         self.predicted = {} # key -> local cache path
         self.css_seen = set()
@@ -203,7 +204,7 @@ class _Page:
         elif key.startswith(("http://", "https://")):
             data, _final, ctype, status = _request(
                 key, "image/webp,image/apng,image/*,*/*;q=0.8",
-                FIREFOX_UA, self.referer, timeout=15, limit=MAX_RESOURCE)
+                FIREFOX_UA, self.referer, timeout=15, limit=self.cache_size)
             if status >= 400:
                 return None
             url = key
@@ -226,7 +227,7 @@ class _Page:
         try:
             data, final, _ct, status = _request(
                 url, "text/css,*/*;q=0.1", FIREFOX_UA, self.referer,
-                timeout=15, limit=MAX_RESOURCE)
+                timeout=15, limit=self.cache_size)
         except pycurl.error:
             return ""
         if status >= 400 or not data:
@@ -253,7 +254,7 @@ class _Page:
         try:
             data, final, _ct, status = _request(
                 url, "text/css,*/*;q=0.1", FIREFOX_UA, self.referer,
-                timeout=15, limit=MAX_RESOURCE)
+                timeout=15, limit=self.cache_size)
         except pycurl.error:
             return ""
         if status >= 400 or not data:
@@ -384,7 +385,7 @@ def fetch_page(url, on_status=None):
     return fetch_page_async(url, on_status).finish()
 
 
-def fetch_page_async(url, on_status=None):
+def fetch_page_async(url, on_status=None, cache_size=MAX_RESOURCE, workers=16):
     if url.startswith("file://"):
         return PageLoad(_read_local(url))
 
@@ -408,7 +409,7 @@ def fetch_page_async(url, on_status=None):
         if href:
             base = urljoin(final, htmllib.unescape(href))
 
-    page = _Page(base, final)
+    page = _Page(base, final, cache_size=cache_size)
 
     #discover resource stuff ----------------------------------------------------------
     css_links = [] # absolute url of external stylesheets
@@ -456,7 +457,7 @@ def fetch_page_async(url, on_status=None):
     text = IMG_RE.sub(do_img_collect, text)
 
     #fetch css and html images concurrently -----------------------------------------
-    executor = ThreadPoolExecutor(max_workers=16)
+    executor = ThreadPoolExecutor(max_workers=workers)
     img_futs = []
 
     def queue_images(entries):

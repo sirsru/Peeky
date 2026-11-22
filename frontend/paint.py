@@ -21,6 +21,7 @@ STD_XTERM = {0:(0,0,0),1:(128,0,0),2:(0,128,0),3:(128,128,0),4:(0,0,128),
 
 _PAIRS = {}
 _next_pair = [10]
+_palette_colors_initialized = set()
 
 def _ansi_cell(fg, bg):
     return "\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm" % (fg[0],fg[1],fg[2], bg[0],bg[1],bg[2])
@@ -31,42 +32,63 @@ def draw_grid(stdscr, palette, grid, top=0, offset=0, height=None, limit=None):
         height = max_y - top
     if limit is None:
         limit = max_x
-    out = []
     for ri in range(height):
         gi = offset + ri
         y = top + ri
         if gi >= len(grid) or y >= max_y:
             break
-        out.append("\x1b[%d;1H" % (y + 1))
         row = grid[gi]
-        for x in range(min(limit, len(row))):
+        n = min(limit, len(row))
+        x = 0
+        while x < n:
             glyph, fg_id, bg_id = row[x]
             fg = palette.get(fg_id, STD_XTERM.get(fg_id, (255, 255, 255)))
             bg = palette.get(bg_id, STD_XTERM.get(bg_id, (0, 0, 0)))
-            out.append(_ansi_cell(fg, bg) + glyph)
-        out.append("\x1b[0m")
-    os.write(1, "".join(out).encode("utf-8", "replace"))
+            a = pair_for(fg_id, bg_id, palette)
+            run = [glyph]
+            x += 1
+            while x < n:
+                g2, f2, b2 = row[x]
+                if f2 != fg_id or b2 != bg_id:
+                    break
+                run.append(g2)
+                x += 1
+            try:
+                stdscr.addstr(y, x - len(run), "".join(run), a)
+            except curses.error:
+                pass
+
+def _init_palette_color(pid, rgb):
+    if pid in _palette_colors_initialized:
+        return
+    if not curses.can_change_color():
+        return
+    try:
+        if 0 <= pid < curses.COLORS:
+            curses.init_color(pid, rgb[0] * 1000 // 255, rgb[1] * 1000 // 255, rgb[2] * 1000 // 255)
+            _palette_colors_initialized.add(pid)
+    except curses.error:
+        pass
+
 
 def pair_for(fg, bg, palette=None):
     key = (fg, bg)
     p = _PAIRS.get(key)
-    if p is None:
+    if p is not None:
+        return curses.color_pair(p)
+    if palette is not None:
+        _init_palette_color(fg, palette.get(fg, STD_XTERM.get(fg, (255, 255, 255))))
+        _init_palette_color(bg, palette.get(bg, STD_XTERM.get(bg, (0, 0, 0))))
+    fg_c = fg if 0 <= fg < curses.COLORS else -1
+    bg_c = bg if 0 <= bg < curses.COLORS else -1
+    try:
         if _next_pair[0] >= curses.COLOR_PAIRS:
-            fg_num, bg_num = fg, bg
-        if palette is not None:
-            for num in (fg, bg):
-                if num in palette:
-                    r, g, b = palette[num]
-                    try:
-                        curses.init_color(num, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255)
-                    except curses.error:
-                        pass
-        try:
-            curses.init_pair(_next_pair[0], fg_num, bg_num)
-        except curses.error:
             return curses.color_pair(0)
-        p = _PAIRS[key] = _next_pair[0]
-        _next_pair[0] += 1
+        curses.init_pair(_next_pair[0], fg_c, bg_c)
+    except curses.error:
+        return curses.color_pair(0)
+    p = _PAIRS[key] = _next_pair[0]
+    _next_pair[0] += 1
     return curses.color_pair(p)
 
 def attr(pair, extra=0):
@@ -248,6 +270,7 @@ def render_page(html_bytes, stdscr, viewport_w=80, viewport_h=24, base_dir=None)
     palette, grid = render_to_grid(html_bytes, max_x, max_y, base_dir)
     stdscr.clear()
     draw_grid(stdscr, palette, grid)
+    stdscr.refresh()
     stdscr.getch()
 
 
@@ -311,6 +334,7 @@ def main(stdscr):
 
     stdscr.clear()
     draw_grid(stdscr, palette, grid)
+    stdscr.refresh()
     stdscr.getch()
 
 

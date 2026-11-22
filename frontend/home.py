@@ -475,11 +475,10 @@ def draw_page(scr, tab, w, h):
         # leave the last column for the scrollbar when one is shown
         limit = w - 1 if max_s else w
         draw_scrollbar(scr, top, rows, total, tab.scroll, w - 1)
-        scr.refresh()                              # chrome + scrollbar to screen
-        draw_grid(scr, tab.palette, tab.grid, top, tab.scroll, rows, limit=limit)  # raw ANSI truecolor grid
+        draw_grid(scr, tab.palette, tab.grid, top, tab.scroll, rows, limit=limit)
     else:
         put(scr, top + 1, 2, "render failed - see log.txt", mut())
-        scr.refresh()
+    scr.refresh()  # dont put ncurses in the cuck chair
 
 
 def prompt_line(scr, label="go: "):

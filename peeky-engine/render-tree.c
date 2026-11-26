@@ -154,13 +154,33 @@ typedef struct {
 } Decl;
 
 typedef struct {
+    const char *comp;
+    size_t len;
+    int child;
+} SelPart;
+
+typedef struct {
+    SelPart *parts;
+    int n;
+    int spec;
+} SelComplex;
+
+typedef struct {
+    SelComplex *complexes;
+    int n;
+} CompiledSelector;
+
+typedef struct {
     char *selector;
     Decl *decls;
     int decl_n, decl_cap;
+    CompiledSelector compiled;
 } Rule;
 
 static Rule *rules;
 static int rule_n, rule_cap;
+
+static void compile_selector(char *selector, CompiledSelector *out);
 
 static int is_font_prop(const char *prop) {
     return !strncmp(prop, "font", 4);
@@ -200,6 +220,9 @@ static void parse_css_level(int depth, int *i) {
                 r->selector = sel;
                 r->decls = NULL;
                 r->decl_n = r->decl_cap = 0;
+                r->compiled.complexes = NULL;
+                r->compiled.n = 0;
+                compile_selector(sel, &r->compiled);
             } else {
                 free(sel);
             }
@@ -383,7 +406,7 @@ static DomNode *dom_parse(void) {
 
 //selector matching
 
-static int class_has(DomNode *e, const char *cl, size_t n) {
+static int class_has_len(DomNode *e, const char *cl, size_t n) {
     const char *v = attr_get(e, "class");
     if (!v)
         return 0;
@@ -400,6 +423,13 @@ static int class_has(DomNode *e, const char *cl, size_t n) {
     return 0;
 }
 
+static const char *attr_get_len(DomNode *e, const char *name, size_t len) {
+    for (int i = 0; i < e->attr_n; i++)
+        if (strlen(e->anames[i]) == len && !strncmp(e->anames[i], name, len))
+            return e->avalues[i];
+    return NULL;
+}
+
 static int is_first_child(DomNode *e) {
     DomNode *parent = e->parent;
     if (!parent) return 0;
@@ -414,42 +444,19 @@ static int is_empty(DomNode *e) {
     return e->kid_n == 0;
 }
 
-static int pseudo_match(DomNode *e, const char *pseudo, int is_element) {
-    if (!pseudo || !e || e->type != D_ELEMENT)
-        return 0;
+static int pseudo_match_len(DomNode *e, const char *pseudo, size_t len,
+                            int is_element);
 
-    if (is_element) {
-        return 0;
-    }
-
-    if (!strcmp(pseudo, "hover") || !strcmp(pseudo, "active") ||
-        !strcmp(pseudo, "focus") || !strcmp(pseudo, "link") ||
-        !strcmp(pseudo, "visited") || !strcmp(pseudo, "target")) {
-        return 0;
-    } else if (!strcmp(pseudo, "first-child")) {
-        return is_first_child(e);
-    } else if (!strcmp(pseudo, "empty")) {
-        return is_empty(e);
-    } else if (!strcmp(pseudo, "root")) {
-        return e->parent && e->parent->type == D_DOCUMENT;
-    } else if (!strcmp(pseudo, "not")) {
-        return 0;
-    } else if (!strcmp(pseudo, "is") || !strcmp(pseudo, "where") ||
-               !strcmp(pseudo, "has")) {
-        return 0;
-    }
-    return 0;
-}
-
-static int match_compound(const char *s, DomNode *e) {
+static int match_compound_len(const char *s, size_t len, DomNode *e) {
     if (e->type != D_ELEMENT)
         return 0;
     const char *p = s;
+    const char *end = s + len;
     int matched = 0;
-    while (*p) {
-        while (*p == ' ')
+    while (p < end) {
+        while (p < end && *p == ' ')
             p++;
-        if (!*p)
+        if (p >= end)
             break;
         if (*p == '*') {
             p++;
@@ -457,44 +464,41 @@ static int match_compound(const char *s, DomNode *e) {
         } else if (*p == '.') {
             p++;
             const char *st = p;
-            while (*p && *p != '.' && *p != '#' && *p != '[' && *p != ':' &&
+            while (p < end && *p != '.' && *p != '#' && *p != '[' && *p != ':' &&
                    *p != ' ')
                 p++;
-            if (!class_has(e, st, (size_t)(p - st)))
+            if (!class_has_len(e, st, (size_t)(p - st)))
                 return 0;
             matched = 1;
         } else if (*p == '#') {
             p++;
             const char *st = p;
-            while (*p && *p != '.' && *p != '#' && *p != '[' && *p != ':' &&
+            while (p < end && *p != '.' && *p != '#' && *p != '[' && *p != ':' &&
                    *p != ' ')
                 p++;
             const char *id = attr_get(e, "id");
-            char *want = xstrndup(st, (size_t)(p - st));
-            int ok = id && !strcmp(id, want);
-            free(want);
+            size_t n = (size_t)(p - st);
+            int ok = id && strlen(id) == n && !memcmp(st, id, n);
             if (!ok)
                 return 0;
             matched = 1;
         } else if (*p == ':') {
             p++;
             int is_element = 0;
-            if (*p == ':') {
+            if (p < end && *p == ':') {
                 p++;
                 is_element = 1;
             }
             const char *st = p;
-            while (*p && *p != '.' && *p != '#' && *p != '[' && *p != ':' &&
+            while (p < end && *p != '.' && *p != '#' && *p != '[' && *p != ':' &&
                    *p != ' ')
                 p++;
-            size_t len = (size_t)(p - st);
-            if (len > 0) {
-                char *pseudo = xstrndup(st, len);
-                if (pseudo_match(e, pseudo, is_element))
+            size_t plen = (size_t)(p - st);
+            if (plen > 0) {
+                if (pseudo_match_len(e, st, plen, is_element))
                     matched = 1;
                 else if (!is_element)
                     return 0;
-                free(pseudo);
             } else {
                 if (!is_element)
                     return 0;
@@ -502,41 +506,43 @@ static int match_compound(const char *s, DomNode *e) {
         } else if (*p == '[') {
             p++;
             const char *ast = p;
-            while (*p && *p != ']' && *p != '=' && *p != '~' && *p != '|' &&
+            while (p < end && *p != ']' && *p != '=' && *p != '~' && *p != '|' &&
                    *p != '^' && *p != '$' && *p != '*')
                 p++;
-            char *aname = xstrndup(ast, (size_t)(p - ast));
-            int ok = attr_get(e, aname) != NULL;
-            if (*p == '=') {
-                p++;
-                const char *vst = p;
-                while (*p && *p != ']')
+            const char *have = attr_get_len(e, ast, (size_t)(p - ast));
+            int ok = 0;
+            if (have) {
+                if (p < end && *p == '=') {
                     p++;
-                char *want = xstrndup(vst, (size_t)(p - vst));
-                size_t wn = strlen(want);
-                if (wn >= 2 && want[0] == '"' && want[wn - 1] == '"') {
-                    want[wn - 1] = '\0';
-                    memmove(want, want + 1, wn - 2);
-                    want[wn - 2] = '\0';
+                    const char *vst = p;
+                    while (p < end && *p != ']')
+                        p++;
+                    size_t wn = (size_t)(p - vst);
+                    char *want = xstrndup(vst, wn);
+                    if (wn >= 2 && want[0] == '"' && want[wn - 1] == '"') {
+                        want[wn - 1] = '\0';
+                        memmove(want, want + 1, wn - 2);
+                        want[wn - 2] = '\0';
+                        wn -= 2;
+                    }
+                    ok = strlen(have) == wn && !memcmp(want, have, wn);
+                    free(want);
+                } else {
+                    ok = 1;
                 }
-                const char *have = attr_get(e, aname);
-                ok = have && !strcmp(have, want);
-                free(want);
             }
-            if (*p == ']')
+            if (p < end && *p == ']')
                 p++;
-            free(aname);
             if (!ok)
                 return 0;
             matched = 1;
         } else if (isalpha((unsigned char)*p)) {
             const char *st = p;
-            while (*p && *p != '.' && *p != '#' && *p != '[' && *p != ':' &&
+            while (p < end && *p != '.' && *p != '#' && *p != '[' && *p != ':' &&
                    *p != ' ')
                 p++;
-            char *tag = xstrndup(st, (size_t)(p - st));
-            int ok = !strcasecmp(tag, e->name);
-            free(tag);
+            size_t tlen = (size_t)(p - st);
+            int ok = strlen(e->name) == tlen && !strncasecmp(st, e->name, tlen);
             if (!ok)
                 return 0;
             matched = 1;
@@ -547,59 +553,37 @@ static int match_compound(const char *s, DomNode *e) {
     return matched;
 }
 
-typedef struct {
-    char *comp;
-    int child;
-} SelPart;
-
-static int parse_complex(const char *sel, SelPart **out, int *n_out) {
-    SelPart *parts = NULL;
-    int n = 0, cap = 0;
-    const char *p = sel;
-    int child = 0;
-    while (*p) {
-        while (*p == ' ')
-            p++;
-        if (!*p)
-            break;
-        if (*p == '>') {
-            child = 1;
-            p++;
-            continue;
-        }
-        const char *st = p;
-        while (*p && *p != ' ' && *p != '>')
-            p++;
-        GROW(parts, n, cap);
-        parts[n].comp = xstrndup(st, (size_t)(p - st));
-        parts[n].child = child;
-        child = 0;
-        n++;
-    }
-    *out = parts;
-    *n_out = n;
-    return n;
-}
-
-static void free_complex(SelPart *parts, int n) {
-    for (int i = 0; i < n; i++)
-        free(parts[i].comp);
-    free(parts);
-}
-
-static int match_complex(SelPart *parts, int n, DomNode *e) {
-    if (!n || !match_compound(parts[n - 1].comp, e))
+static int pseudo_match_len(DomNode *e, const char *pseudo, size_t len,
+                            int is_element) {
+    if (!e || e->type != D_ELEMENT)
         return 0;
-    int pi = n - 2;
+    if (is_element)
+        return 0;
+    if (len == 11 && !memcmp(pseudo, "first-child", 11))
+        return is_first_child(e);
+    if (len == 5 && !memcmp(pseudo, "empty", 5))
+        return is_empty(e);
+    if (len == 4 && !memcmp(pseudo, "root", 4))
+        return e->parent && e->parent->type == D_DOCUMENT;
+    return 0;
+}
+
+static int match_complex_compiled(SelComplex *cx, DomNode *e) {
+    if (!cx->n ||
+        !match_compound_len(cx->parts[cx->n - 1].comp, cx->parts[cx->n - 1].len, e))
+        return 0;
+    int pi = cx->n - 2;
     DomNode *cur = e;
     while (pi >= 0 && cur) {
-        if (parts[pi + 1].child) {
+        if (cx->parts[pi + 1].child) {
             cur = cur->parent;
-            if (!cur || !match_compound(parts[pi].comp, cur))
+            if (!cur ||
+                !match_compound_len(cx->parts[pi].comp, cx->parts[pi].len, cur))
                 return 0;
         } else {
             DomNode *a = cur->parent;
-            while (a && !match_compound(parts[pi].comp, a))
+            while (a &&
+                   !match_compound_len(cx->parts[pi].comp, cx->parts[pi].len, a))
                 a = a->parent;
             if (!a)
                 return 0;
@@ -610,26 +594,78 @@ static int match_complex(SelPart *parts, int n, DomNode *e) {
     return pi < 0;
 }
 
-static int spec_of(SelPart *parts, int n) {
-    int ids = 0, cls = 0, types = 0;
-    for (int i = 0; i < n; i++) {
-        const char *s = parts[i].comp;
-        if (isalpha((unsigned char)*s))
-            types++;
-        for (const char *p = s; *p; p++) {
-            if (*p == '#')
-                ids++;
-            else if (*p == ':') {
-                if (p[1] == ':') {
-                    types++;
-                    p++;
-                } else
-                    cls++;
-            } else if (*p == '.' || *p == '[')
-                cls++;
+static void compile_selector(char *selector, CompiledSelector *out) {
+    out->complexes = NULL;
+    out->n = 0;
+    int cap = 0;
+    const char *p = selector;
+    while (*p) {
+        while (*p == ' ')
+            p++;
+        if (!*p)
+            break;
+        const char *ss = p;
+        int depth = 0;
+        while (*p && (*p != ',' || depth > 0)) {
+            if (*p == '[')
+                depth++;
+            else if (*p == ']' && depth)
+                depth--;
+            p++;
         }
+        const char *qend = ss + (p - ss);
+        SelPart *parts = NULL;
+        int np = 0, pcap = 0;
+        int child = 0;
+        const char *q = ss;
+        while (q < qend) {
+            while (q < qend && *q == ' ')
+                q++;
+            if (q >= qend)
+                break;
+            if (*q == '>') {
+                child = 1;
+                q++;
+                continue;
+            }
+            const char *st = q;
+            while (q < qend && *q != ' ' && *q != '>')
+                q++;
+            GROW(parts, np, pcap);
+            parts[np].comp = st;
+            parts[np].len = (size_t)(q - st);
+            parts[np].child = child;
+            child = 0;
+            np++;
+        }
+        int spec = 0;
+        for (int i = 0; i < np; i++) {
+            const char *s = parts[i].comp;
+            size_t slen = parts[i].len;
+            if (slen && isalpha((unsigned char)*s))
+                spec += 1;
+            for (size_t j = 0; j < slen; j++) {
+                char c = s[j];
+                if (c == '#')
+                    spec += 100;
+                else if (c == ':') {
+                    if (j + 1 < slen && s[j + 1] == ':') {
+                        spec += 1;
+                        j++;
+                    } else
+                        spec += 10;
+                } else if (c == '.' || c == '[')
+                    spec += 10;
+            }
+        }
+        GROW(out->complexes, out->n, cap);
+        out->complexes[out->n].parts = parts;
+        out->complexes[out->n].n = np;
+        out->complexes[out->n].spec = spec;
+        out->n++;
+        if (*p == ',')
+            p++;
     }
-    return ids * 100 + cls * 10 + types;
 }
 
 //cascade
@@ -937,31 +973,12 @@ static void collect_cands(DomNode *e) {
     for (int i = 0; i < rule_n; i++) {
         Rule *r = &rules[i];
         int best = -1;
-        const char *p = r->selector;
-        while (*p) {
-            while (*p == ' ')
-                p++;
-            const char *ss = p;
-            int depth = 0;
-            while (*p && (*p != ',' || depth > 0)) {
-                if (*p == '[')
-                    depth++;
-                else if (*p == ']' && depth)
-                    depth--;
-                p++;
-            }
-            char *one = xstrndup(ss, (size_t)(p - ss));
-            SelPart *parts = NULL;
-            int np = 0;
-            if (parse_complex(one, &parts, &np) && match_complex(parts, np, e)) {
-                int s = spec_of(parts, np);
+        for (int c = 0; c < r->compiled.n; c++) {
+            if (match_complex_compiled(&r->compiled.complexes[c], e)) {
+                int s = r->compiled.complexes[c].spec;
                 if (s > best)
                     best = s;
             }
-            free_complex(parts, np);
-            free(one);
-            if (*p == ',')
-                p++;
         }
         if (best < 0)
             continue;
@@ -1300,5 +1317,18 @@ int main(int argc, char **argv) {
     for (int k = 0; k < line_n; k++)
         free(lines[k].content);
     free(lines);
+    for (int k = 0; k < rule_n; k++) {
+        Rule *r = &rules[k];
+        for (int c = 0; c < r->compiled.n; c++)
+            free(r->compiled.complexes[c].parts);
+        free(r->compiled.complexes);
+        free(r->selector);
+        for (int d = 0; d < r->decl_n; d++) {
+            free(r->decls[d].prop);
+            free(r->decls[d].value);
+        }
+        free(r->decls);
+    }
+    free(rules);
     return 0;
 }

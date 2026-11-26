@@ -13,6 +13,7 @@ import termios
 import time
 import textwrap
 from urllib.parse import quote
+import threading
 
 import fetch
 import settings
@@ -406,24 +407,62 @@ def navigate(stdscr, tab, q):
     stdscr.clear()
     stdscr.refresh()
 
-    state = {"name": "", "t0": 0.0, "spin": 0}
+    state = {"name": "", "t0": 0.0}
+    SPINNER_FPS = 20.0
 
-    def status(name, elapsed=None):
-        if elapsed is None:
+    def status(name=None, elapsed=None):
+        if name is not None:
             state["name"], state["t0"] = name, time.monotonic()
-            state["spin"] = (state["spin"] + 1) % len(SPINNER)
-            text = f"{SPINNER[state['spin']]} {name}…"
+        now = time.monotonic()
+        if elapsed is not None:
+            text = f"{state['name']} {elapsed:.1f}s"
         else:
-            text = f"{name} {elapsed:.1f}s"
+            spin = int((now - state["t0"]) * SPINNER_FPS) % len(SPINNER)
+            text = f"{SPINNER[spin]} {state['name']}…"
         put(stdscr, h - 1, 0, " " * w, attr(P_PANEL))
         put(stdscr, h - 1, 1, text, attr(P_ACCENT, curses.A_BOLD))
         stdscr.refresh()
 
-    status("fetch", None)
+    def run_blocking(fn, *args, **kwargs):
+        updates = []
+        lock = threading.Lock()
+        result = {}
+
+        def on_status(name, elapsed=None):
+            with lock:
+                updates.append((name, elapsed))
+
+        def worker():
+            try:
+                result["value"] = fn(*args, on_status=on_status, **kwargs)
+            except BaseException as e:  # noqa: BLE001
+                result["error"] = e
+            result["done"] = True
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        while not result.get("done"):
+            with lock:
+                pending = list(updates)
+                updates.clear()
+            for name, elapsed in pending:
+                status(name, elapsed)
+            status(None, None)
+            time.sleep(0.05)
+        with lock:
+            pending = list(updates)
+            updates.clear()
+        for name, elapsed in pending:
+            status(name, elapsed)
+        if "error" in result:
+            raise result["error"]
+        return result["value"]
+
     url, base_dir = resolve_query(q)
+
     try:
-        load = fetch.fetch_page_async(
-            url, on_status=status,
+        load = run_blocking(
+            fetch.fetch_page_async, url,
             cache_size=settings.SETTINGS["cache_size"],
             workers=settings.SETTINGS["workers"],
         )
@@ -443,9 +482,8 @@ def navigate(stdscr, tab, q):
     tab.page = load
 
     rows = page_rows(h)
-    status("render", None)
-    tab.palette, tab.grid = render_to_grid(tab.html, w, rows, tab.base_dir,
-                                           on_status=status, page=load)
+    tab.palette, tab.grid = run_blocking(
+        render_to_grid, tab.html, w, rows, tab.base_dir, page=load)
     tab.size = (w, rows)
 
 
